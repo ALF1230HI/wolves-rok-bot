@@ -17,9 +17,10 @@ import os
 import re
 import time
 import discord
+import aiohttp
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
@@ -135,79 +136,67 @@ def resolve_timezone(abbr_or_name: str):
         return None
 
 
+# ---- KvK schedule ----
+# Kingdom 3953's KvK first started September 11, 2026, and recurs roughly every
+# 2 months at 12:00 UTC. Update KVK_FIRST_START if your kingdom's actual cadence
+# differs, or if leadership announces an out-of-cycle date.
+KVK_FIRST_START = datetime(2026, 9, 11, 12, 0, tzinfo=ZoneInfo("UTC"))
+KVK_INTERVAL_MONTHS = 2
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    total_month_index = dt.month - 1 + months
+    year = dt.year + total_month_index // 12
+    month = total_month_index % 12 + 1
+    # Clamp day for months with fewer days (e.g. no Feb 30/31)
+    import calendar
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def get_next_kvk(now: datetime = None) -> datetime:
+    """Return the next upcoming KvK date/time (UTC), based on the recurring schedule."""
+    now = now or datetime.now(tz=ZoneInfo("UTC"))
+    next_kvk = KVK_FIRST_START
+    while next_kvk < now:
+        next_kvk = _add_months(next_kvk, KVK_INTERVAL_MONTHS)
+    return next_kvk
+
+
+TIMEAPI_BASE = "https://timeapi.io/api"
+
+
+async def fetch_time_conversion(from_tz: str, dt: datetime, to_tz: str):
+    """Call the free TimeAPI.io service to convert a datetime between IANA timezones.
+
+    Returns a dict with the conversion result, or None if the API call fails
+    (in which case the caller should fall back to local zoneinfo math).
+    """
+    payload = {
+        "fromTimeZone": from_tz,
+        "dateTime": dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "toTimeZone": to_tz,
+        "dstAmbiguity": "",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{TIMEAPI_BASE}/conversion/converttimezone",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=6),
+            ) as resp:
+                if resp.status != 200:
+                    print(f"[timeapi] non-200 response: {resp.status}")
+                    return None
+                return await resp.json()
+    except Exception as e:
+        print(f"[timeapi] request failed: {e!r}")
+        return None
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-
-class TimezoneSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"kvk_tz:(?P<epoch>[0-9]+)"):
-    """Dropdown letting a member pick their own timezone to see the converted KvK time.
-
-    Built as a DynamicItem so it keeps working even after the bot restarts —
-    the KvK moment (as a UTC epoch timestamp) is encoded directly into the
-    component's custom_id instead of being held only in memory.
-    """
-
-    def __init__(self, epoch: int):
-        self.epoch = epoch
-        options = [
-            discord.SelectOption(label=label, value=tz_name)
-            for label, tz_name in TIMEZONE_CHOICES
-        ]
-        select = discord.ui.Select(
-            placeholder="🌐 Select your timezone to see your local KvK time...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            custom_id=f"kvk_tz:{epoch}",
-        )
-        super().__init__(select)
-
-    @classmethod
-    async def from_custom_id(cls, interaction, item, match):
-        return cls(int(match["epoch"]))
-
-    async def callback(self, interaction: discord.Interaction):
-        tz_name = self.item.values[0]
-        label = next((l for l, v in TIMEZONE_CHOICES if v == tz_name), tz_name)
-        base_utc = datetime.fromtimestamp(self.epoch, tz=ZoneInfo("UTC"))
-        converted = base_utc.astimezone(ZoneInfo(tz_name))
-
-        local_time_str = converted.strftime("%I:%M %p").lstrip("0")
-        local_day_str = converted.strftime("%A, %B %d, %Y")
-        utc_time_str = base_utc.strftime("%I:%M %p").lstrip("0")
-        utc_day_str = base_utc.strftime("%A, %B %d, %Y")
-
-        # Offset display, e.g. "UTC+8" or "UTC-5"
-        offset = converted.utcoffset()
-        total_minutes = int(offset.total_seconds() // 60)
-        sign = "+" if total_minutes >= 0 else "-"
-        h, m = divmod(abs(total_minutes), 60)
-        offset_str = f"UTC{sign}{h}" + (f":{m:02d}" if m else "")
-
-        embed = discord.Embed(
-            title="🕒 Your Local KvK Time",
-            description=f"Showing time for **{label}** ({offset_str})",
-            color=RED,
-        )
-        embed.add_field(
-            name=f"📍 Your Time ({label})",
-            value=f"{local_day_str}\n**{local_time_str}**",
-            inline=True,
-        )
-        embed.add_field(
-            name="🌐 Server Time (UTC)",
-            value=f"{utc_day_str}\n**{utc_time_str} UTC**",
-            inline=True,
-        )
-        embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-class TimezoneView(discord.ui.View):
-    def __init__(self, epoch: int):
-        super().__init__(timeout=None)  # persistent across restarts
-        self.add_item(TimezoneSelect(epoch))
 
 
 @bot.event
@@ -218,19 +207,10 @@ async def on_interaction(interaction: discord.Interaction):
         print(f"[interaction] {time.strftime('%H:%M:%S')} /{name} received (age={age:.2f}s) from {interaction.user}")
 
 
-_dynamic_items_registered = False
-
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     await stats_db.init_db()
-
-    global _dynamic_items_registered
-    if not _dynamic_items_registered:
-        bot.add_dynamic_items(TimezoneSelect)
-        _dynamic_items_registered = True
-        print("Registered persistent KvK timezone dropdown.")
 
     try:
         if GUILD_ID:
@@ -519,91 +499,54 @@ async def announce(interaction: discord.Interaction, title: str, message: str):
 
 
 
-@bot.tree.command(name="kvk", description="(Admin) Announce KvK date & time with a timezone picker dropdown")
-@app_commands.describe(
-    date="Date, e.g. 'Saturday, September 19, 2026'",
-    time_utc="Time in 24h UTC, e.g. '12:00'",
-    year="Year the date falls in (defaults to current year)",
-)
-@app_commands.checks.has_permissions(manage_messages=True)
-async def kvk(interaction: discord.Interaction, date: str, time_utc: str, year: int = None):
-    await interaction.response.defer(thinking=True)
-
-    try:
-        hour, minute = map(int, time_utc.split(":"))
-    except ValueError:
-        await interaction.followup.send(
-            "⚠️ Time must be in HH:MM 24h format, e.g. 12:00", ephemeral=True
-        )
-        return
-
-    now = datetime.utcnow()
-    target_year = year or now.year
-    # Anchor date is only used for accurate DST-aware conversions; the "date" field
-    # shown to users is whatever text they typed in the `date` parameter.
-    base_utc = datetime(target_year, now.month, now.day, hour, minute, tzinfo=ZoneInfo("UTC"))
-
-    embed = discord.Embed(
-        title="⚔️ KvK Announcement – Kingdom 3953",
-        description="Get ready Wolves! **KvK is coming!**\n\nUse the dropdown below to see the time in *your* timezone. 👇",
-        color=RED,
-    )
-    embed.add_field(name="📅 Date", value=date, inline=False)
-    embed.add_field(name="🌐 Time (UTC)", value=f"{time_utc} UTC", inline=False)
-    embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Be online, be ready, be Wolves!")
-
-    content = f"```ansi\n\u001b[1;31m⚔️ KvK Announcement – Kingdom 3953\u001b[0m\n```"
-    epoch = int(base_utc.timestamp())
-    view = TimezoneView(epoch)
-
-    # Remember this as "the" upcoming KvK event for this server, so members can
-    # just run /mytime with their timezone abbreviation and get an instant answer.
-    await stats_db.set_kvk_event(interaction.guild_id, date, epoch)
-
-    await interaction.followup.send(content=content, embed=embed, view=view)
-
-
-@bot.tree.command(name="mytime", description="See the KvK time in your own timezone — just type your zone (e.g. BST, EST, SGT)")
-@app_commands.describe(timezone="Your timezone abbreviation, e.g. BST, EST, PST, SGT, IST, AEST")
-async def mytime(interaction: discord.Interaction, timezone: str):
+@bot.tree.command(name="kvk", description="See when the next KvK is in your own timezone")
+@app_commands.describe(timezone="Your timezone abbreviation or IANA name, e.g. BST, EST, PST, SGT, IST, Europe/London")
+async def kvk(interaction: discord.Interaction, timezone: str):
     t0 = time.monotonic()
-    print(f"[mytime] invoked, created_at age = {time.time() - interaction.created_at.timestamp():.2f}s")
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    print(f"[mytime] defer() completed in {time.monotonic() - t0:.2f}s")
+    print(f"[kvk] invoked, created_at age = {time.time() - interaction.created_at.timestamp():.2f}s")
+    await interaction.response.defer(thinking=True)
+    print(f"[kvk] defer() completed in {time.monotonic() - t0:.2f}s")
 
-    event = await stats_db.get_kvk_event(interaction.guild_id)
-    if not event:
-        await interaction.followup.send(
-            "⚠️ No KvK event has been announced yet. Ask an officer to run `/kvk` first.", ephemeral=True
-        )
-        return
-
+    tz_name = TZ_ABBREVIATIONS.get(timezone.strip().upper(), timezone.strip())
     tz = resolve_timezone(timezone)
     if tz is None:
         await interaction.followup.send(
             f"⚠️ I don't recognize the timezone `{timezone}`. Try something like `BST`, `EST`, `PST`, `SGT`, "
-            f"`IST`, `AEST`, `CET`, or a full zone name like `Europe/London`.",
+            f"`IST`, `AEST`, `CET`, or a full IANA zone name like `Europe/London`.",
             ephemeral=True,
         )
         return
 
-    base_utc = datetime.fromtimestamp(event["epoch"], tz=ZoneInfo("UTC"))
-    converted = base_utc.astimezone(tz)
+    next_kvk_utc = get_next_kvk()
 
-    local_time_str = converted.strftime("%I:%M %p").lstrip("0")
-    local_day_str = converted.strftime("%A, %B %d, %Y")
-    utc_time_str = base_utc.strftime("%I:%M %p").lstrip("0")
-    utc_day_str = base_utc.strftime("%A, %B %d, %Y")
+    # Try the live TimeAPI.io conversion first; fall back to local zoneinfo math
+    # if the API is unreachable, so the command never fully breaks.
+    api_result = await fetch_time_conversion("UTC", next_kvk_utc.replace(tzinfo=None), tz_name)
 
-    offset = converted.utcoffset()
+    if api_result and "conversionResult" in api_result:
+        cr = api_result["conversionResult"]
+        local_dt = datetime(cr["year"], cr["month"], cr["day"], cr["hour"], cr["minute"])
+        local_time_str = local_dt.strftime("%I:%M %p").lstrip("0")
+        local_day_str = local_dt.strftime("%A, %B %d, %Y")
+        source = "🌐 via TimeAPI.io"
+    else:
+        converted = next_kvk_utc.astimezone(tz)
+        local_time_str = converted.strftime("%I:%M %p").lstrip("0")
+        local_day_str = converted.strftime("%A, %B %d, %Y")
+        source = "🧮 calculated locally (API unavailable)"
+
+    utc_time_str = next_kvk_utc.strftime("%I:%M %p").lstrip("0")
+    utc_day_str = next_kvk_utc.strftime("%A, %B %d, %Y")
+
+    offset = next_kvk_utc.astimezone(tz).utcoffset()
     total_minutes = int(offset.total_seconds() // 60)
     sign = "+" if total_minutes >= 0 else "-"
     h, m = divmod(abs(total_minutes), 60)
     offset_str = f"UTC{sign}{h}" + (f":{m:02d}" if m else "")
 
     embed = discord.Embed(
-        title="🕒 Your KvK Time",
-        description=f"Timezone: **{timezone.upper()}** ({offset_str})",
+        title="⚔️ Next KvK – Kingdom 3953",
+        description=f"Timezone: **{timezone.upper()}** ({offset_str})\n{source}",
         color=RED,
     )
     embed.add_field(
@@ -616,8 +559,8 @@ async def mytime(interaction: discord.Interaction, timezone: str):
         value=f"{utc_day_str}\n**{utc_time_str} UTC**",
         inline=True,
     )
-    embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953")
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Be online, be ready, be Wolves!")
+    await interaction.followup.send(embed=embed)
 
 
 async def _send_error(interaction: discord.Interaction, text: str):
@@ -639,21 +582,12 @@ async def announce_error(interaction: discord.Interaction, error):
         await _send_error(interaction, f"⚠️ Error: {error}")
 
 
-@kvk.error
-async def kvk_error(interaction: discord.Interaction, error):
-    print(f"[kvk] error: {error!r}")
-    if isinstance(error, app_commands.MissingPermissions):
-        await _send_error(interaction, "🚫 You need `Manage Messages` permission to use this command.")
-    else:
-        await _send_error(interaction, f"⚠️ Error: {error}")
-
-
 @submitstats.error
 @profile.error
 @compare.error
 @rank.error
 @kvkgains.error
-@mytime.error
+@kvk.error
 async def stats_command_error(interaction: discord.Interaction, error):
     print(f"[stats-command] error: {error!r}")
     await _send_error(interaction, f"⚠️ Error: {error}")
