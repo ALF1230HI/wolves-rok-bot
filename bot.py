@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 import stats_db
+import sheets
 
 load_dotenv()
 
@@ -249,6 +250,67 @@ async def shop(interaction: discord.Interaction):
         embed.add_field(name=f"{PAYPAL_EMOJI} {name}", value=price, inline=True)
     embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • DM the seller to place your order!")
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="donate", description="Record a donation to the alliance bank (logs to the Google Sheet)")
+@app_commands.describe(
+    food="Amount of Food donated (optional)",
+    wood="Amount of Wood donated (optional)",
+    stone="Amount of Stone donated (optional)",
+    gold="Amount of Gold donated (optional)",
+)
+async def donate(
+    interaction: discord.Interaction,
+    food: int = 0,
+    wood: int = 0,
+    stone: int = 0,
+    gold: int = 0,
+):
+    t0 = time.monotonic()
+    print(f"[donate] invoked, created_at age = {time.time() - interaction.created_at.timestamp():.2f}s")
+    await interaction.response.defer(thinking=True)
+    print(f"[donate] defer() completed in {time.monotonic() - t0:.2f}s")
+
+    resources = {"Food": food, "Wood": wood, "Stone": stone, "Gold": gold}
+    donated = {k: v for k, v in resources.items() if v and v > 0}
+
+    if not donated:
+        await interaction.followup.send(
+            "⚠️ You need to donate at least one resource (Food, Wood, Stone, or Gold).", ephemeral=True
+        )
+        return
+
+    if any(v < 0 for v in resources.values()):
+        await interaction.followup.send("⚠️ Donation amounts can't be negative.", ephemeral=True)
+        return
+
+    display_name = interaction.user.display_name
+
+    try:
+        await sheets.append_donation(display_name, donated)
+    except FileNotFoundError as e:
+        print(f"[donate] sheets error: {e}")
+        await interaction.followup.send(
+            "⚠️ The bank tracker isn't set up yet (missing Google credentials). Contact an officer.",
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        print(f"[donate] sheets error: {e!r}")
+        await interaction.followup.send(
+            f"⚠️ Failed to record your donation in the bank tracker: {e}", ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(
+        title="🏦 Donation Recorded",
+        description=f"Thank you, **{display_name}**! Your donation has been logged.",
+        color=RED,
+    )
+    for name, amount in donated.items():
+        embed.add_field(name=name, value=fmt_num(amount), inline=True)
+    embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
+    await interaction.followup.send(embed=embed)
 
 
 def fmt_num(n: int) -> str:
@@ -588,6 +650,7 @@ async def announce_error(interaction: discord.Interaction, error):
 @rank.error
 @kvkgains.error
 @kvk.error
+@donate.error
 async def stats_command_error(interaction: discord.Interaction, error):
     print(f"[stats-command] error: {error!r}")
     await _send_error(interaction, f"⚠️ Error: {error}")

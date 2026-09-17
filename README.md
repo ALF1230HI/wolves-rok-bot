@@ -8,8 +8,9 @@ A Discord bot for the WOLVES 🐺 | BRAVIA 3953 alliance: resource shop, KvK ann
 |---|---|---|
 | `/ping` | Everyone | Health check — confirms the bot is online |
 | `/shop` | Everyone | Posts the current resource shop price list |
+| `/donate` | Everyone | Logs a resource donation (Food/Wood/Stone/Gold) to the Alliance Bank Donations Tracker Google Sheet |
 | `/announce` | Manage Messages permission | Posts a custom red-branded announcement (title + message) |
-| `/kvk` | Manage Messages permission | Posts a KvK date/time announcement, auto-converted into UTC, US East, US West, UK, Central Europe, and Singapore time |
+| `/kvk` | Everyone | Shows the next KvK date/time converted to your own timezone, using live TimeAPI.io conversion |
 
 ## 1. Create the Discord Application (one-time, done by you on discord.com)
 
@@ -55,7 +56,46 @@ Synced N slash command(s).
 
 Slash commands appear instantly if `GUILD_ID` is set; otherwise global commands can take up to an hour to show the first time.
 
-## 4. Customizing
+## 4. Set up /donate (Google Sheets integration)
+
+`/donate` writes a new row to the **Alliance Bank Donations Tracker** Google Sheet every time
+a member logs a donation. This requires a free Google Cloud **service account** — a robot
+account Google issues for exactly this kind of automation.
+
+1. Go to https://console.cloud.google.com/ and create a new project (any name).
+2. In the search bar, search for **"Google Sheets API"** → open it → click **Enable**.
+3. Go to **APIs & Services → Credentials** → **Create Credentials → Service Account**.
+   Give it any name, click through the defaults, then **Done**.
+4. Click into the new service account → **Keys** tab → **Add Key → Create new key → JSON**.
+   This downloads a `.json` credentials file.
+5. Save that file in the bot's folder as `google_credentials.json` (or set
+   `GOOGLE_CREDENTIALS_PATH` in `.env` to wherever you put it). **Never commit this file** —
+   it's already excluded via `.gitignore`.
+6. Open the downloaded JSON and copy the `client_email` value
+   (looks like `xxxx@xxxx.iam.gserviceaccount.com`).
+7. Open your Google Sheet → click **Share** → paste that email → give it **Editor** access → Send.
+8. In `.env`, set:
+   ```
+   GOOGLE_CREDENTIALS_PATH=google_credentials.json
+   DONATIONS_SHEET_ID=1spszkPihGZ9IIbe_v3Q2KtEai2awX1JITRxE09EzY4E
+   DONATIONS_TAB_NAME=Donations
+   ```
+   (`DONATIONS_SHEET_ID` is the long ID from the sheet's URL; `DONATIONS_TAB_NAME` is the tab
+   at the bottom of the spreadsheet — check it matches exactly, including capitalization.)
+
+**On Railway**: since you can't easily commit the JSON file's contents to a plain env var without
+reformatting, either (a) upload the credentials file via Railway's volume/file support, or
+(b) paste the entire JSON contents into a `GOOGLE_CREDENTIALS_JSON` variable and adjust
+`sheets.py` to load credentials from that string instead of a file path — ask if you want this
+variant set up.
+
+The sheet's expected column layout (row 1 headers) is:
+
+| A | B | C | D | E | F |
+|---|---|---|---|---|---|
+| Date | Alliance Member | Food | Wood | Stone | Gold |
+
+## 5. Customizing
 
 - **Shop prices**: edit the `SHOP_ITEMS` list near the top of `bot.py`.
 - **PayPal emoji**: update `PAYPAL_EMOJI` with your server's custom emoji (right-click the emoji in Discord → Copy ID, or type `\:emojiname:` in a Discord message and send it to see its raw code).
