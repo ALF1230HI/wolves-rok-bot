@@ -7,6 +7,7 @@ so they don't block the bot's event loop.
 """
 
 import os
+import json
 import asyncio
 from datetime import datetime, timezone as dt_timezone
 
@@ -19,7 +20,11 @@ SCOPES = [
 ]
 
 # Set these via environment variables (see .env.example)
+# Either point to a JSON key file on disk...
 GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "google_credentials.json")
+# ...or (useful on hosts like Railway where you can't upload a file) paste the
+# entire JSON key contents into a GOOGLE_CREDENTIALS_JSON environment variable.
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 DONATIONS_SHEET_ID = os.getenv("DONATIONS_SHEET_ID", "1spszkPihGZ9IIbe_v3Q2KtEai2awX1JITRxE09EzY4E")
 DONATIONS_TAB_NAME = os.getenv("DONATIONS_TAB_NAME", "Donations")
 ALLIANCE_MEMBERS_TAB_NAME = os.getenv("ALLIANCE_MEMBERS_TAB_NAME", "Alliance Members")
@@ -34,14 +39,21 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        if not os.path.exists(GOOGLE_CREDENTIALS_PATH):
+        if GOOGLE_CREDENTIALS_JSON:
+            # Credentials provided inline via env var (e.g. on Railway).
+            info = json.loads(GOOGLE_CREDENTIALS_JSON)
+            creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        elif os.path.exists(GOOGLE_CREDENTIALS_PATH):
+            creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
+        else:
             raise FileNotFoundError(
-                f"Google service account credentials not found at {GOOGLE_CREDENTIALS_PATH}. "
-                "See .env.example / README for setup instructions."
+                f"Google service account credentials not found. Set GOOGLE_CREDENTIALS_JSON "
+                f"(paste the full JSON key contents) or place a key file at "
+                f"{GOOGLE_CREDENTIALS_PATH}. See .env.example / README for setup instructions."
             )
-        creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
         _client = gspread.authorize(creds)
     return _client
+
 
 
 def _ensure_member_exists_sync(sheet, display_name: str):

@@ -83,11 +83,16 @@ account Google issues for exactly this kind of automation.
    (`DONATIONS_SHEET_ID` is the long ID from the sheet's URL; `DONATIONS_TAB_NAME` is the tab
    at the bottom of the spreadsheet — check it matches exactly, including capitalization.)
 
-**On Railway**: since you can't easily commit the JSON file's contents to a plain env var without
-reformatting, either (a) upload the credentials file via Railway's volume/file support, or
-(b) paste the entire JSON contents into a `GOOGLE_CREDENTIALS_JSON` variable and adjust
-`sheets.py` to load credentials from that string instead of a file path — ask if you want this
-variant set up.
+**On Railway**: you can't upload the JSON file directly, so instead paste its entire contents
+into a `GOOGLE_CREDENTIALS_JSON` environment variable in Railway's **Variables** tab:
+
+1. Open your downloaded `google_credentials.json` file in a text editor.
+2. Copy the **entire contents** (the whole `{ ... }` JSON blob, all on however many lines it is).
+3. In Railway → your project → **Variables** tab → **New Variable**.
+4. Name: `GOOGLE_CREDENTIALS_JSON`. Value: paste the whole JSON blob in.
+5. Save — Railway will redeploy automatically. The bot checks `GOOGLE_CREDENTIALS_JSON` first
+   and uses it if present, falling back to a `google_credentials.json` file otherwise (which is
+   what happens automatically when running locally).
 
 The sheet's expected column layout (row 1 headers) is:
 
@@ -123,15 +128,31 @@ This bot needs to run continuously to respond to slash commands. Recommended: **
 3. In Railway: **New Project → Deploy from GitHub repo** → select your repo.
 4. Railway auto-detects Python and installs `requirements.txt`. It will look for a start command —
    this project includes a `Procfile` (`worker: python3 bot.py`) so Railway knows how to run it.
-5. Go to your Railway project → **Variables** tab → add:
+5. Go to your Railway project → **Variables** tab → add every variable the bot needs. At minimum:
    - `DISCORD_BOT_TOKEN` = your bot token
    - `GUILD_ID` = your server ID (optional, for instant command sync)
-6. Deploy. Check the **Deploy Logs** tab — you should see:
+   - `GOOGLE_CREDENTIALS_JSON` = the full contents of your service account JSON key file
+     (see the `/donate` setup section above) — required for `/donate` to work on Railway.
+   - `DONATIONS_SHEET_ID` and `DONATIONS_TAB_NAME` only if you want to override the defaults
+     already baked into `sheets.py`.
+
+   **This step is the #1 reason a Railway deploy "doesn't sync commands" or crashes on
+   startup** — if `DISCORD_BOT_TOKEN` is missing/wrong, the bot can't log in at all, so it
+   never gets to the point of syncing slash commands.
+6. Under **Settings → Deploy**, Railway should already be set to auto-redeploy whenever you
+   push to the `main` branch on GitHub. Every `git push` from now on will trigger a fresh
+   deploy automatically — no manual redeploy needed.
+7. Check the **Deploy Logs** tab (or **View Logs**) — you should see:
    ```
    Logged in as ... 
    Synced N slash command(s).
    ```
-7. Done — the bot now runs 24/7 independent of your computer or this chat session.
+   If you instead see a crash/traceback, the log will usually point straight at a missing
+   environment variable or a `ModuleNotFoundError` (usually fixed by making sure
+   `requirements.txt` lists everything the bot imports).
+8. Done — the bot now runs 24/7 on Railway's servers, independent of your computer, this chat
+   session, or whether your PC is on or off. You should be able to close your laptop and the
+   bot stays online.
 
 **Note on the database:** this bot stores governor stats in a local SQLite file (`data/stats.db`).
 Railway's filesystem is ephemeral on redeploys — if you redeploy, existing stat history may reset. For
