@@ -106,14 +106,17 @@ The sheet's expected column layout (row 1 headers) is:
 (Alliance → Assistance → Assistance Report). The bot uses OCR (`pytesseract`) plus simple
 icon-color classification to:
 
-1. Find the newest entries in the screenshot sent to the alliance bank.
+1. Scan every entry in the screenshot's history that was sent to the alliance bank (not just
+   the newest one — older entries further down the list count too).
 2. Read each entry's resource type (Food/Wood/Stone/Gold, based on the icon's color) and amount.
-3. Compare the total per resource against exactly what the member typed in the command.
+3. For each resource the member typed, check whether any bank entry of that type in the
+   screenshot matches the amount (within a small tolerance for OCR noise).
 
-Donations are rejected if: the newest entry wasn't sent to the bank, the resource type
-doesn't match, or the amount doesn't match (within a small tolerance for OCR noise). Since
-each report row only shows one resource, a multi-resource `/donate` (e.g. `food` + `gold` in
-one call) is verified against the newest *consecutive* run of bank rows, summed per resource.
+Donations are rejected if: no entry was sent to the bank at all, a typed resource has no
+matching bank entry of that type, or none of the bank entries of that type have a matching
+amount. Since each report row only shows one resource, a multi-resource `/donate` (e.g.
+`food` + `gold` in one call) is verified by finding a matching bank entry for each resource
+independently — they don't need to be adjacent or the newest entries.
 
 - The bank's exact in-game name is set via the `BANK_NAME` environment variable
   (default: `KD Bank 53`). If the bank is ever renamed, update this variable — no code

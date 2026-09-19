@@ -139,14 +139,14 @@ def _extract_report_rows(image: Image.Image) -> list[dict]:
 
 
 def _verify_sync(image_bytes: bytes, expected_resources: dict) -> tuple[bool, str]:
-    """Check that the newest consecutive Assistance Report entries sent to
-    BANK_NAME (from the top of the list) add up to `expected_resources`
-    (e.g. {"Food": 5000000, "Gold": 2000000}).
+    """Check that the Assistance Report screenshot contains, somewhere in its
+    history (not just the newest entry), a transport to BANK_NAME for each
+    resource/amount in `expected_resources` (e.g. {"Food": 5000000}).
 
-    Each report row only shows one resource type, so a single real-world
-    donation of multiple resources shows up as several consecutive rows —
-    we sum those rows per resource type and compare against what the member
-    typed. Returns (ok, reason); `reason` explains a rejection.
+    Each report row only shows one resource type, so for every resource the
+    member typed we look for any bank-targeted row of that resource type
+    whose amount matches (within tolerance) — it doesn't have to be the most
+    recent entry. Returns (ok, reason); `reason` explains a rejection.
     """
     image = Image.open(io.BytesIO(image_bytes))
     rows = _extract_report_rows(image)
@@ -155,55 +155,49 @@ def _verify_sync(image_bytes: bytes, expected_resources: dict) -> tuple[bool, st
         return False, "Couldn't read any 'Transport Target' entries from the screenshot."
 
     normalized_bank = _normalize(BANK_NAME)
+    bank_rows = [r for r in rows if normalized_bank in _normalize(r["target"])]
 
-    # Take the newest *consecutive* run of rows sent to the bank, starting
-    # from the very top of the list (the report is newest-first). As soon as
-    # we hit a row sent to someone else, stop — anything older/interleaved
-    # isn't part of "the donation you just made".
-    batch = []
-    for row in rows:
-        if normalized_bank in _normalize(row["target"]):
-            batch.append(row)
-        else:
-            break
-
-    if not batch:
+    if not bank_rows:
         return False, (
-            f"The most recent entry in your screenshot isn't a transport to **{BANK_NAME}**. "
-            "Please screenshot your Assistance Report right after donating, so the newest "
-            "entry (or entries) shows the transport(s) you just made to the bank."
+            f"No entry in your screenshot shows a transport to **{BANK_NAME}**. "
+            "Please attach a screenshot of an Assistance Report entry where the "
+            f"Transport Target is **{BANK_NAME}**."
         )
 
-    unreadable = [r for r in batch if r["resource"] is None or r["amount"] is None]
-    if unreadable:
+    readable_bank_rows = [r for r in bank_rows if r["resource"] is not None and r["amount"] is not None]
+    if not readable_bank_rows:
         return False, (
             f"Found a transport to **{BANK_NAME}** but couldn't read its resource/amount clearly. "
             "Try a clearer, uncropped screenshot."
         )
 
-    totals = {}
-    for r in batch:
-        totals[r["resource"]] = totals.get(r["resource"], 0) + r["amount"]
-
-    # Every resource the member typed must be backed by a matching amount
-    # in the screenshot — this is what stops someone claiming more than they
-    # actually sent.
+    # For each resource the member typed, look for ANY bank row of that
+    # resource type with a matching amount, anywhere in the screenshot.
     mismatches = []
     for resource, expected_amount in expected_resources.items():
         if not expected_amount:
             continue
-        shown_amount = totals.get(resource)
-        if shown_amount is None:
-            mismatches.append(f"you entered {expected_amount:,} {resource}, but the screenshot doesn't show any {resource} sent to {BANK_NAME}")
+        candidates = [r["amount"] for r in readable_bank_rows if r["resource"] == resource]
+        if not candidates:
+            mismatches.append(
+                f"you entered {expected_amount:,} {resource}, but the screenshot doesn't show any {resource} sent to {BANK_NAME}"
+            )
             continue
-        diff = abs(shown_amount - expected_amount)
-        if diff > max(1, expected_amount * AMOUNT_TOLERANCE):
-            mismatches.append(f"you entered {expected_amount:,} {resource}, but the screenshot shows {shown_amount:,} {resource}")
+        match_found = any(
+            abs(amount - expected_amount) <= max(1, expected_amount * AMOUNT_TOLERANCE)
+            for amount in candidates
+        )
+        if not match_found:
+            shown = ", ".join(f"{a:,}" for a in candidates)
+            mismatches.append(
+                f"you entered {expected_amount:,} {resource}, but the screenshot shows {shown} {resource} sent to {BANK_NAME}"
+            )
 
     if mismatches:
         return False, "The amounts don't match: " + "; ".join(mismatches) + "."
 
     return True, ""
+
 
 
 
