@@ -38,7 +38,28 @@ DISCORD_BOT_TOKEN=your-actual-token-here
 GUILD_ID=your-server-id   # optional, makes slash commands appear instantly while testing
 ```
 
+If the bot is invited into more than one server, use `GUILD_IDS` instead (comma-separated)
+so slash commands instant-sync in all of them:
+
+```
+GUILD_IDS=1386443294644633721,1513550074473480394
+```
+
 To get your server (guild) ID: enable Developer Mode in Discord (User Settings → Advanced), then right-click your server icon → Copy Server ID.
+
+### Adding the bot to another server
+
+1. Invite it with an OAuth2 URL (`bot` + `applications.commands` scopes, with Send
+   Messages / Embed Links / Attach Files / Manage Messages permissions), or reuse the
+   existing invite link for this bot from the Discord Developer Portal.
+2. Add the new server's guild ID to `GUILD_IDS` (see above) so slash commands appear
+   instantly there too, instead of waiting up to an hour for global sync.
+3. `/announce` posts into a fixed channel per server. Add the new server's ID → its
+   announcement channel ID to the `ANNOUNCE_CHANNELS` dict near the top of `bot.py`.
+4. Everything else (`/donate`, `/submitstats`, `/profile`, `/compare`, `/rank`,
+   `/kvkgains`, `/shop`, `/kvk`, `/list`) reads from the same Google Sheet and bank
+   name regardless of which server the command is run in, so no extra config is
+   needed for those.
 
 ## 3. Install & Run
 
@@ -54,7 +75,7 @@ Logged in as WOLVES BRAVIA 3953#1234 (ID: ...)
 Synced N slash command(s).
 ```
 
-Slash commands appear instantly if `GUILD_ID` is set; otherwise global commands can take up to an hour to show the first time.
+Slash commands appear instantly if `GUILD_ID` (or `GUILD_IDS`) is set; otherwise global commands can take up to an hour to show the first time.
 
 ## 4. Set up /donate (Google Sheets integration)
 

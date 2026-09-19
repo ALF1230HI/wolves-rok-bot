@@ -31,11 +31,26 @@ import ocr_verify
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")  # optional: set for instant slash command sync in one server
+
+# Optional: set for instant slash command sync (otherwise global sync can take
+# up to an hour to show the first time). Accepts either a single ID via
+# GUILD_ID, or multiple comma-separated IDs via GUILD_IDS, e.g.
+# GUILD_IDS=1513550074473480394,1386443294644633721
+_guild_ids_raw = os.getenv("GUILD_IDS") or os.getenv("GUILD_ID") or ""
+GUILD_IDS = [int(g.strip()) for g in _guild_ids_raw.split(",") if g.strip()]
+GUILD_ID = GUILD_IDS[0] if GUILD_IDS else None  # kept for backwards compatibility
 
 RED = 0xFF0000
 PAYPAL_EMOJI = "<:PayPalLOGO:1457553629547593933>"  # update with your server's emoji id if different
-ANNOUNCE_CHANNEL_ID = 1514659627936120992  # /announce always posts here
+
+# /announce posts into the announcement channel belonging to whichever server
+# the command was run in. Add an entry here for every server the bot is in.
+ANNOUNCE_CHANNELS = {
+    1513550074473480394: 1514659627936120992,  # "Bleasy's ROK server"
+    1386443294644633721: 1386520678295015536,  # "WOLVES 🐺 | BRAVIA 3953"
+}
+# Fallback used if a server isn't in the map above (keeps old behavior working).
+ANNOUNCE_CHANNEL_ID = 1514659627936120992
 
 # ---- Resource shop pricing (edit these anytime) ----
 SHOP_ITEMS = [
@@ -215,19 +230,24 @@ async def on_ready():
     await stats_db.init_db()
 
     try:
-        if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            # Copy the locally-defined commands into the guild first...
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
+        if GUILD_IDS:
+            total = 0
+            for gid in GUILD_IDS:
+                guild = discord.Object(id=gid)
+                # Copy the locally-defined commands into each guild...
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                total += len(synced)
+                print(f"Synced {len(synced)} slash command(s) to guild {gid}.")
             # ...then clear and push an empty global command list so any
             # previously-registered global commands stop showing up (avoids
             # duplicates; global removal can take up to an hour to propagate).
             bot.tree.clear_commands(guild=None)
             await bot.tree.sync()
+            print(f"Synced {total} slash command(s) total across {len(GUILD_IDS)} guild(s).")
         else:
             synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s).")
+            print(f"Synced {len(synced)} slash command(s).")
     except Exception as e:
         print(f"Slash command sync failed: {e}")
 
@@ -250,9 +270,14 @@ async def list_commands(interaction: discord.Interaction):
 
     # Startup sync moves command registrations into guild scope (and clears
     # the global list to avoid duplicates — see on_ready), so we must look
-    # up commands in that same guild scope here, not the (now-empty) global
-    # scope, or this list would always come back blank.
-    lookup_guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+    # up commands in the guild this was actually invoked from, not the
+    # (now-empty) global scope, or this list would always come back blank.
+    if interaction.guild_id and interaction.guild_id in GUILD_IDS:
+        lookup_guild = discord.Object(id=interaction.guild_id)
+    elif GUILD_IDS:
+        lookup_guild = discord.Object(id=GUILD_IDS[0])
+    else:
+        lookup_guild = None
     commands_sorted = sorted(bot.tree.get_commands(guild=lookup_guild), key=lambda c: c.name)
     for cmd in commands_sorted:
         params = " ".join(f"[{p.name}]" for p in cmd.parameters)
@@ -583,17 +608,22 @@ async def announce(interaction: discord.Interaction, title: str, message: str):
     # Acknowledge immediately so Discord doesn't time out (3s limit) while we fetch the channel/send.
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    # Post into the announcement channel that belongs to whichever server this
+    # command was run in, falling back to the original default if this server
+    # isn't in the map yet.
+    target_channel_id = ANNOUNCE_CHANNELS.get(interaction.guild_id, ANNOUNCE_CHANNEL_ID)
+
+    channel = bot.get_channel(target_channel_id)
     if channel is None:
         try:
-            channel = await bot.fetch_channel(ANNOUNCE_CHANNEL_ID)
+            channel = await bot.fetch_channel(target_channel_id)
         except discord.HTTPException as e:
             print(f"[announce] fetch_channel failed: {e}")
             channel = None
 
     if channel is None:
         await interaction.followup.send(
-            "⚠️ Could not find the announcement channel. Check ANNOUNCE_CHANNEL_ID and bot permissions.",
+            "⚠️ Could not find the announcement channel for this server. Check ANNOUNCE_CHANNELS and bot permissions.",
             ephemeral=True,
         )
         return
@@ -619,11 +649,11 @@ async def announce(interaction: discord.Interaction, title: str, message: str):
         await interaction.followup.send(f"⚠️ Failed to send announcement: {e}", ephemeral=True)
         return
 
-    if interaction.channel_id == ANNOUNCE_CHANNEL_ID:
+    if interaction.channel_id == target_channel_id:
         await interaction.followup.send("✅ Announcement posted above.", ephemeral=True)
     else:
         await interaction.followup.send(
-            f"✅ Announcement posted in <#{ANNOUNCE_CHANNEL_ID}>.", ephemeral=True
+            f"✅ Announcement posted in <#{target_channel_id}>.", ephemeral=True
         )
 
 
