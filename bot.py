@@ -258,9 +258,11 @@ async def shop(interaction: discord.Interaction):
     wood="Amount of Wood donated (optional)",
     stone="Amount of Stone donated (optional)",
     gold="Amount of Gold donated (optional)",
+    proof="Screenshot of your in-game 'Assistance Report' showing this donation (required)",
 )
 async def donate(
     interaction: discord.Interaction,
+    proof: discord.Attachment = None,
     food: int = 0,
     wood: int = 0,
     stone: int = 0,
@@ -268,6 +270,28 @@ async def donate(
 ):
     t0 = time.monotonic()
     print(f"[donate] invoked, created_at age = {time.time() - interaction.created_at.timestamp():.2f}s")
+
+    # A proof screenshot is required so officers can verify the donation.
+    if proof is None:
+        embed = discord.Embed(
+            title="📸 Screenshot Required",
+            description=(
+                "Please attach a screenshot of your in-game **Assistance Report** showing "
+                "the resources you sent, like the example below.\n\n"
+                "In-game: **Alliance → Assistance → Assistance Report**, then screenshot the "
+                "entry for the donation you just made and run `/donate` again with it attached "
+                "(use the `proof` option)."
+            ),
+            color=RED,
+        )
+        embed.set_image(url="attachment://donation_proof_example.png")
+        embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
+        example_file = discord.File(
+            "assets/donation_proof_example.png", filename="donation_proof_example.png"
+        )
+        await interaction.response.send_message(embed=embed, file=example_file, ephemeral=True)
+        return
+
     await interaction.response.defer(thinking=True)
     print(f"[donate] defer() completed in {time.monotonic() - t0:.2f}s")
 
@@ -309,6 +333,7 @@ async def donate(
     )
     for name, amount in donated.items():
         embed.add_field(name=name, value=fmt_num(amount), inline=True)
+    embed.set_image(url=proof.url)
     embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
     await interaction.followup.send(embed=embed)
 
