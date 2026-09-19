@@ -309,11 +309,11 @@ async def donate(
         await interaction.followup.send("⚠️ Donation amounts can't be negative.", ephemeral=True)
         return
 
-    # Verify the screenshot actually shows a transfer to the alliance bank,
-    # not some other player, before logging anything.
+    # Verify the screenshot actually shows these exact resources/amounts
+    # being sent to the alliance bank, not some other player or amount.
     try:
         image_bytes = await proof.read()
-        matches_bank = await ocr_verify.screenshot_shows_bank_donation(image_bytes)
+        verified, reason = await ocr_verify.verify_donation_screenshot(image_bytes, donated)
     except Exception as e:
         print(f"[donate] OCR check failed to run: {e!r}")
         await interaction.followup.send(
@@ -323,13 +323,8 @@ async def donate(
         )
         return
 
-    if not matches_bank:
-        await interaction.followup.send(
-            f"⚠️ That screenshot doesn't show a transport to **{ocr_verify.BANK_NAME}**. "
-            "Donations only count if sent to the alliance bank — please attach a screenshot "
-            f"of an Assistance Report entry where the Transport Target is **{ocr_verify.BANK_NAME}**.",
-            ephemeral=True,
-        )
+    if not verified:
+        await interaction.followup.send(f"⚠️ {reason}", ephemeral=True)
         return
 
     display_name = interaction.user.display_name

@@ -103,9 +103,17 @@ The sheet's expected column layout (row 1 headers) is:
 ### Proof screenshot verification
 
 `/donate` requires members to attach a screenshot of their in-game **Assistance Report**
-(Alliance → Assistance → Assistance Report). The bot uses OCR (`pytesseract`) to read the
-text off the screenshot and checks that it shows a transport to the alliance bank — donations
-sent to any other player/name are rejected automatically.
+(Alliance → Assistance → Assistance Report). The bot uses OCR (`pytesseract`) plus simple
+icon-color classification to:
+
+1. Find the newest entries in the screenshot sent to the alliance bank.
+2. Read each entry's resource type (Food/Wood/Stone/Gold, based on the icon's color) and amount.
+3. Compare the total per resource against exactly what the member typed in the command.
+
+Donations are rejected if: the newest entry wasn't sent to the bank, the resource type
+doesn't match, or the amount doesn't match (within a small tolerance for OCR noise). Since
+each report row only shows one resource, a multi-resource `/donate` (e.g. `food` + `gold` in
+one call) is verified against the newest *consecutive* run of bank rows, summed per resource.
 
 - The bank's exact in-game name is set via the `BANK_NAME` environment variable
   (default: `KD Bank 53`). If the bank is ever renamed, update this variable — no code
@@ -115,6 +123,9 @@ sent to any other player/name are rejected automatically.
   for your OS. **On Railway**, this is already handled — `railpack.json` in this repo tells
   Railway's build system to install `tesseract-ocr` automatically, so no extra setup is
   needed there.
+- OCR isn't perfect — very blurry or unusually cropped screenshots can occasionally be
+  misread. If a member is incorrectly rejected despite a valid donation, an officer can log
+  it manually in the sheet.
 
 ## 5. Customizing
 
