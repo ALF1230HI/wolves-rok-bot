@@ -248,9 +248,12 @@ async def list_commands(interaction: discord.Interaction):
         color=RED,
     )
 
-    # Pull descriptions straight from the bot's own registered commands, so
-    # this list can never drift out of sync as commands are added/changed.
-    commands_sorted = sorted(bot.tree.get_commands(), key=lambda c: c.name)
+    # Startup sync moves command registrations into guild scope (and clears
+    # the global list to avoid duplicates — see on_ready), so we must look
+    # up commands in that same guild scope here, not the (now-empty) global
+    # scope, or this list would always come back blank.
+    lookup_guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+    commands_sorted = sorted(bot.tree.get_commands(guild=lookup_guild), key=lambda c: c.name)
     for cmd in commands_sorted:
         params = " ".join(f"[{p.name}]" for p in cmd.parameters)
         usage = f"/{cmd.name} {params}".strip()
