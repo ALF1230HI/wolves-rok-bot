@@ -157,6 +157,11 @@ independently — they don't need to be adjacent or the newest entries.
 - **PayPal emoji**: update `PAYPAL_EMOJI` with your server's custom emoji (right-click the emoji in Discord → Copy ID, or type `\:emojiname:` in a Discord message and send it to see its raw code).
 - **Branding color**: change the `RED` constant (hex color, e.g. `0xFF0000`).
 - **Timezones shown for `/kvk`**: edit the `TIMEZONES` list.
+- **KvK schedule**: `/kvk` projects the next KvK start date from `KVK_LAST_START`
+  (the most recently confirmed start date) plus `KVK_CYCLE_DAYS` (season length +
+  off-season gap, currently ~52 + ~30 = ~82 days). Whenever leadership confirms a
+  new KvK start date in-game, update `KVK_LAST_START` near the top of `bot.py` to
+  that date so the projection stays anchored to reality instead of drifting.
 
 ## Hosting
 

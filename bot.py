@@ -154,30 +154,31 @@ def resolve_timezone(abbr_or_name: str):
 
 
 # ---- KvK schedule ----
-# Kingdom 3953's KvK first started September 11, 2026, and recurs roughly every
-# 2 months at 12:00 UTC. Update KVK_FIRST_START if your kingdom's actual cadence
-# differs, or if leadership announces an out-of-cycle date.
-KVK_FIRST_START = datetime(2026, 9, 11, 12, 0, tzinfo=ZoneInfo("UTC"))
-KVK_INTERVAL_MONTHS = 2
-
-
-def _add_months(dt: datetime, months: int) -> datetime:
-    total_month_index = dt.month - 1 + months
-    year = dt.year + total_month_index // 12
-    month = total_month_index % 12 + 1
-    # Clamp day for months with fewer days (e.g. no Feb 30/31)
-    import calendar
-    day = min(dt.day, calendar.monthrange(year, month)[1])
-    return dt.replace(year=year, month=month, day=day)
+# Kingdom 3953's most recent (confirmed) KvK season started September 11, 2026
+# at 12:00 UTC and ran ~52 days (through ~November 2, 2026), followed by a
+# roughly month-long off-season before the next one begins. That gives a
+# start-to-start cycle of about 82 days, which is what /kvk uses to project
+# future start dates. Update KVK_LAST_START (and the lengths below, if
+# leadership announces a different pattern) whenever a new KvK is confirmed
+# in-game, so the projection keeps anchoring off the real, most recent date
+# rather than drifting further from reality every cycle.
+KVK_LAST_START = datetime(2026, 9, 11, 12, 0, tzinfo=ZoneInfo("UTC"))
+KVK_SEASON_LENGTH_DAYS = 52   # Sep 11 -> Nov 2, based on the confirmed KvK Active period
+KVK_OFF_SEASON_DAYS = 30      # typical gap observed before the next KvK begins
+KVK_CYCLE_DAYS = KVK_SEASON_LENGTH_DAYS + KVK_OFF_SEASON_DAYS  # ~82 days start-to-start
 
 
 def get_next_kvk(now: datetime = None) -> datetime:
-    """Return the next upcoming KvK date/time (UTC), based on the recurring schedule."""
+    """Return the next upcoming KvK start date/time (UTC), based on the
+    confirmed KVK_LAST_START plus the observed season+off-season cycle length.
+    """
     now = now or datetime.now(tz=ZoneInfo("UTC"))
-    next_kvk = KVK_FIRST_START
+    cycle = timedelta(days=KVK_CYCLE_DAYS)
+    next_kvk = KVK_LAST_START
     while next_kvk < now:
-        next_kvk = _add_months(next_kvk, KVK_INTERVAL_MONTHS)
+        next_kvk += cycle
     return next_kvk
+
 
 
 TIMEAPI_BASE = "https://timeapi.io/api"
