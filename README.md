@@ -8,7 +8,7 @@ A Discord bot for the WOLVES 🐺 | BRAVIA 3953 alliance: resource shop, KvK ann
 |---|---|---|
 | `/ping` | Everyone | Health check — confirms the bot is online |
 | `/shop` | Everyone | Posts the current resource shop price list |
-| `/donate` | Everyone | Logs a resource donation (Food/Wood/Stone/Gold) to the Alliance Bank Donations Tracker Google Sheet |
+| `/donate` | Everyone | Logs a resource donation (Food/Wood/Stone/Gold) to the Alliance Bank Donations Tracker Google Sheet — requires a proof screenshot that must show a transport to the alliance bank |
 | `/announce` | Manage Messages permission | Posts a custom red-branded announcement (title + message) |
 | `/kvk` | Everyone | Shows the next KvK date/time converted to your own timezone, using live TimeAPI.io conversion |
 
@@ -99,6 +99,22 @@ The sheet's expected column layout (row 1 headers) is:
 | A | B | C | D | E | F |
 |---|---|---|---|---|---|
 | Date | Alliance Member | Food | Wood | Stone | Gold |
+
+### Proof screenshot verification
+
+`/donate` requires members to attach a screenshot of their in-game **Assistance Report**
+(Alliance → Assistance → Assistance Report). The bot uses OCR (`pytesseract`) to read the
+text off the screenshot and checks that it shows a transport to the alliance bank — donations
+sent to any other player/name are rejected automatically.
+
+- The bank's exact in-game name is set via the `BANK_NAME` environment variable
+  (default: `KD Bank 53`). If the bank is ever renamed, update this variable — no code
+  changes needed.
+- This requires the `tesseract-ocr` system package to be installed (not just the Python
+  library). Locally: `sudo apt-get install tesseract-ocr` (Debian/Ubuntu) or the equivalent
+  for your OS. **On Railway**, this is already handled — `railpack.json` in this repo tells
+  Railway's build system to install `tesseract-ocr` automatically, so no extra setup is
+  needed there.
 
 ## 5. Customizing
 

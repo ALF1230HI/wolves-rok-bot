@@ -1,0 +1,6 @@
+{
+  "provider": "python",
+  "deploy": {
+    "aptPackages": ["tesseract-ocr"]
+  }
+}

@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 
 import stats_db
 import sheets
+import ocr_verify
 
 load_dotenv()
 
@@ -306,6 +307,29 @@ async def donate(
 
     if any(v < 0 for v in resources.values()):
         await interaction.followup.send("⚠️ Donation amounts can't be negative.", ephemeral=True)
+        return
+
+    # Verify the screenshot actually shows a transfer to the alliance bank,
+    # not some other player, before logging anything.
+    try:
+        image_bytes = await proof.read()
+        matches_bank = await ocr_verify.screenshot_shows_bank_donation(image_bytes)
+    except Exception as e:
+        print(f"[donate] OCR check failed to run: {e!r}")
+        await interaction.followup.send(
+            "⚠️ Couldn't read your screenshot. Please try again with a clear screenshot of your "
+            "Assistance Report, or contact an officer if this keeps happening.",
+            ephemeral=True,
+        )
+        return
+
+    if not matches_bank:
+        await interaction.followup.send(
+            f"⚠️ That screenshot doesn't show a transport to **{ocr_verify.BANK_NAME}**. "
+            "Donations only count if sent to the alliance bank — please attach a screenshot "
+            f"of an Assistance Report entry where the Transport Target is **{ocr_verify.BANK_NAME}**.",
+            ephemeral=True,
+        )
         return
 
     display_name = interaction.user.display_name
