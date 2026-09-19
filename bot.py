@@ -240,6 +240,26 @@ async def ping(interaction: discord.Interaction):
     print(f"[ping] responded in {time.monotonic() - t0:.2f}s")
 
 
+@bot.tree.command(name="list", description="Show every command this bot has")
+async def list_commands(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📋 WOLVES Bot — Command List",
+        description="Here's everything I can do:",
+        color=RED,
+    )
+
+    # Pull descriptions straight from the bot's own registered commands, so
+    # this list can never drift out of sync as commands are added/changed.
+    commands_sorted = sorted(bot.tree.get_commands(), key=lambda c: c.name)
+    for cmd in commands_sorted:
+        params = " ".join(f"[{p.name}]" for p in cmd.parameters)
+        usage = f"/{cmd.name} {params}".strip()
+        embed.add_field(name=usage, value=cmd.description or "No description", inline=False)
+
+    embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • [param] = optional/required option for that command")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="shop", description="Show the WOLVES resource shop price list")
 async def shop(interaction: discord.Interaction):
     embed = discord.Embed(
