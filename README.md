@@ -121,37 +121,15 @@ The sheet's expected column layout (row 1 headers) is:
 |---|---|---|---|---|---|
 | Date | Alliance Member | Food | Wood | Stone | Gold |
 
-### Proof screenshot verification
+### Proof screenshot
 
 `/donate` requires members to attach a screenshot of their in-game **Assistance Report**
-(Alliance → Assistance → Assistance Report). The bot uses OCR (`pytesseract`) plus simple
-icon-color classification to:
-
-1. Scan every entry in the screenshot's history (not just the newest one — older entries
-   further down the list count too).
-2. Read each entry's resource type (Food/Wood/Stone/Gold, based on the icon's color) and amount.
-3. For each resource the member typed, check whether any entry of that type in the
-   screenshot matches the amount (within a small tolerance for OCR noise).
-
-This does **not** check who the transport was sent to — it only confirms the resource
-type + amount the member typed actually appears somewhere in their screenshot. Officers
-still need to manually confirm the recipient (the alliance bank) themselves by checking
-the screenshot posted in the confirmation embed.
-
-Donations are rejected if: a typed resource has no matching entry of that type anywhere in
-the screenshot, or none of the entries of that type have a matching amount. Since each
-report row only shows one resource, a multi-resource `/donate` (e.g. `food` + `gold` in one
-call) is verified by finding a matching entry for each resource independently — they don't
-need to be adjacent or the newest entries.
-
-- This requires the `tesseract-ocr` system package to be installed (not just the Python
-  library). Locally: `sudo apt-get install tesseract-ocr` (Debian/Ubuntu) or the equivalent
-  for your OS. **On Railway**, this is already handled — `railpack.json` in this repo tells
-  Railway's build system to install `tesseract-ocr` automatically, so no extra setup is
-  needed there.
-- OCR isn't perfect — very blurry or unusually cropped screenshots can occasionally be
-  misread. If a member is incorrectly rejected despite a valid donation, an officer can log
-  it manually in the sheet.
+(Alliance → Assistance → Assistance Report) as proof of the donation. The bot doesn't run
+any automated verification on the screenshot's contents (no OCR, no resource/amount or
+recipient checking) — it just requires an attachment be present, logs whatever
+resources/amounts the member typed into the command, and posts the screenshot in the
+confirmation embed so officers can manually eyeball it and confirm it actually shows a
+transport to the bank for the stated amount.
 
 ## 5. Customizing
 

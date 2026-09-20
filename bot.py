@@ -26,7 +26,6 @@ from dotenv import load_dotenv
 
 import stats_db
 import sheets
-import ocr_verify
 
 load_dotenv()
 
@@ -356,25 +355,6 @@ async def donate(
 
     if any(v < 0 for v in resources.values()):
         await interaction.followup.send("⚠️ Donation amounts can't be negative.", ephemeral=True)
-        return
-
-    # Verify the screenshot actually shows these exact resources/amounts
-    # somewhere in the transport history (doesn't check the recipient —
-    # officers manually confirm it was sent to the bank).
-    try:
-        image_bytes = await proof.read()
-        verified, reason = await ocr_verify.verify_donation_screenshot(image_bytes, donated)
-    except Exception as e:
-        print(f"[donate] OCR check failed to run: {e!r}")
-        await interaction.followup.send(
-            "⚠️ Couldn't read your screenshot. Please try again with a clear screenshot of your "
-            "Assistance Report, or contact an officer if this keeps happening.",
-            ephemeral=True,
-        )
-        return
-
-    if not verified:
-        await interaction.followup.send(f"⚠️ {reason}", ephemeral=True)
         return
 
     display_name = interaction.user.display_name
