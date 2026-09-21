@@ -41,7 +41,7 @@ GUILD_IDS = [int(g.strip()) for g in _guild_ids_raw.split(",") if g.strip()]
 GUILD_ID = GUILD_IDS[0] if GUILD_IDS else None  # kept for backwards compatibility
 
 RED = 0xFF0000
-PAYPAL_EMOJI = "<:PayPalLOGO:1457553629547593933>"  # update with your server's emoji id if different
+PAYPAL_EMOJI = "<:paypallogo:1551673165233790996>"  # update with your server's emoji id if different
 
 # /announce posts into the announcement channel belonging to whichever server
 # the command was run in. Add an entry here for every server the bot is in.
