@@ -11,6 +11,8 @@ A Discord bot for the WOLVES 🐺 | BRAVIA 3953 alliance: resource shop, KvK ann
 | `/donate` | Everyone | Logs a resource donation (Food/Wood/Stone/Gold) to the Alliance Bank Donations Tracker Google Sheet — requires a proof screenshot that must show a transport to the alliance bank |
 | `/announce` | Manage Messages permission | Posts a custom red-branded announcement (title + message) |
 | `/kvk` | Everyone | Shows the next KvK date/time converted to your own timezone, using live TimeAPI.io conversion |
+| `/config` | Administrator | View or change this server's own settings (donations sheet, tab names, bank name, announce channel) — see "Multi-server /config" below |
+| `/list` | Everyone | Shows every slash command the bot has |
 
 ## 1. Create the Discord Application (one-time, done by you on discord.com)
 
@@ -130,6 +132,55 @@ recipient checking) — it just requires an attachment be present, logs whatever
 resources/amounts the member typed into the command, and posts the screenshot in the
 confirmation embed so officers can manually eyeball it and confirm it actually shows a
 transport to the bank for the stated amount.
+
+### Multi-server /config (running this bot for more than one alliance/server)
+
+This bot can serve many Discord servers from a single running instance — each one
+pointing `/donate` at its own Google Sheet, tab names, bank name, and announcement
+channel, without needing a separate bot deployment or hosting cost per server. This is
+the setup you'd want if you're selling/distributing the bot rather than just running it
+for your own alliance.
+
+**How it works:**
+
+- All per-server settings are stored centrally in a private "master" Google Sheet that
+  only the bot operator (you) can view — buyers/admins in other servers never see or
+  interact with this sheet directly.
+- Any Discord server administrator can run `/config` in their own server to view or
+  change *their own* server's settings. Running `/config` with no options shows the
+  current settings; running it with one or more options (e.g.
+  `/config donations_sheet:<url> bank_name:"My Bank"`) updates just those fields.
+- A server that hasn't run `/config` yet automatically falls back to the sheet ID/tab
+  names/bank name set in your `.env`/Railway variables (`DONATIONS_SHEET_ID`,
+  `DONATIONS_TAB_NAME`, etc.) — so your own original server keeps working without
+  needing to configure anything.
+
+**One-time setup for you (the operator):**
+
+1. Create a new blank Google Sheet from your own Google account (not the bot's).
+2. Click **Share**, paste in your bot's service account email (find it in the
+   `client_email` field of your `google_credentials.json`), set it to **Editor**, and
+   share.
+3. Rename the first tab to `Server Configs` and set this header row:
+   `Guild ID | Guild Name | Added On (UTC) | Configured By | Donations Sheet ID |
+   Donations Tab Name | Alliance Members Tab Name | Bank Name | Announce Channel ID |
+   Last Updated (UTC)`
+4. Copy that sheet's ID from its URL and set it as `MASTER_CONFIG_SHEET_ID` in your
+   `.env`/Railway variables.
+
+**What each buyer/admin needs to do (once, per server):**
+
+1. Create their own Google Sheet for donation tracking (or reuse an existing one) with
+   `Donations` and `Alliance Members` tabs matching the column layout shown above.
+2. Share that sheet with the same bot service account email as **Editor**.
+3. In their Discord server, run `/config donations_sheet:<their sheet's URL>` (plus
+   `bank_name`, `announce_channel`, and tab name overrides if needed). The bot verifies
+   it can actually open the sheet before saving — if it can't, it tells the admin
+   exactly which email to share it with.
+
+From then on, `/donate` and `/announce` in that server automatically use their own
+sheet/channel, and their settings appear as a new row in your master dashboard sheet so
+you can see every server using the bot at a glance.
 
 ## 5. Customizing
 

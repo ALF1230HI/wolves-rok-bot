@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 
 import stats_db
 import sheets
+import server_config
 
 load_dotenv()
 
@@ -358,9 +359,16 @@ async def donate(
         return
 
     display_name = interaction.user.display_name
+    config = await server_config.get_config(interaction.guild_id)
 
     try:
-        await sheets.append_donation(display_name, donated)
+        await sheets.append_donation(
+            display_name,
+            donated,
+            sheet_id=config["donations_sheet_id"],
+            donations_tab_name=config["donations_tab_name"],
+            members_tab_name=config["alliance_members_tab_name"],
+        )
     except FileNotFoundError as e:
         print(f"[donate] sheets error: {e}")
         await interaction.followup.send(
@@ -371,7 +379,9 @@ async def donate(
     except Exception as e:
         print(f"[donate] sheets error: {e!r}")
         await interaction.followup.send(
-            f"⚠️ Failed to record your donation in the bank tracker: {e}", ephemeral=True
+            f"⚠️ Failed to record your donation in the bank tracker: {e}\n"
+            f"-# If this server hasn't run `/config` yet to set its donations sheet, an admin should do that first.",
+            ephemeral=True,
         )
         return
 
@@ -385,6 +395,99 @@ async def donate(
     embed.set_image(url=proof.url)
     embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
     await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="config", description="(Admin) View or change this server's bot settings")
+@app_commands.describe(
+    donations_sheet="Google Sheet URL or ID that /donate should read/write (must be shared with the bot's service account as Editor)",
+    donations_tab="Tab name in that sheet with the donation table (default: 'Donations')",
+    alliance_members_tab="Tab name with the member list used by Donation Summary formulas (default: 'Alliance Members')",
+    bank_name="Your alliance bank's exact in-game name, shown to members in proof-screenshot instructions",
+    announce_channel="Channel where /announce should post for this server",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def config(
+    interaction: discord.Interaction,
+    donations_sheet: str = None,
+    donations_tab: str = None,
+    alliance_members_tab: str = None,
+    bank_name: str = None,
+    announce_channel: discord.TextChannel = None,
+):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    # No options given -> just show the server's current settings.
+    if not any([donations_sheet, donations_tab, alliance_members_tab, bank_name, announce_channel]):
+        current = await server_config.get_config(interaction.guild_id)
+        embed = discord.Embed(
+            title="⚙️ Current Server Configuration",
+            color=RED,
+        )
+        embed.add_field(
+            name="Donations Sheet ID", value=f"`{current['donations_sheet_id']}`", inline=False
+        )
+        embed.add_field(name="Donations Tab", value=current["donations_tab_name"], inline=True)
+        embed.add_field(
+            name="Alliance Members Tab", value=current["alliance_members_tab_name"], inline=True
+        )
+        embed.add_field(name="Bank Name", value=current["bank_name"], inline=True)
+        embed.add_field(
+            name="Announce Channel",
+            value=f"<#{current['announce_channel_id']}>" if current["announce_channel_id"] else "Not set",
+            inline=True,
+        )
+        embed.set_footer(text="Run /config with an option to change a setting, e.g. /config donations_sheet:<url>")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    updates = {}
+
+    if donations_sheet:
+        # Accept either a raw Sheet ID or a full URL and extract the ID.
+        match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", donations_sheet)
+        sheet_id = match.group(1) if match else donations_sheet.strip()
+
+        ok, result = await server_config.verify_sheet_access(sheet_id)
+        if not ok:
+            service_email = sheets.get_service_account_email()
+            await interaction.followup.send(
+                f"⚠️ Couldn't open that spreadsheet: {result}\n\n"
+                f"Make sure you've shared it with **`{service_email}`** as an **Editor** "
+                f"(Share button → paste that email → Editor → Send), then try again.",
+                ephemeral=True,
+            )
+            return
+        updates["donations_sheet_id"] = sheet_id
+
+    if donations_tab:
+        updates["donations_tab_name"] = donations_tab
+    if alliance_members_tab:
+        updates["alliance_members_tab_name"] = alliance_members_tab
+    if bank_name:
+        updates["bank_name"] = bank_name
+    if announce_channel:
+        updates["announce_channel_id"] = announce_channel.id
+
+    try:
+        await server_config.set_config(
+            guild_id=interaction.guild_id,
+            guild_name=interaction.guild.name if interaction.guild else "Unknown",
+            configured_by=str(interaction.user),
+            **updates,
+        )
+    except Exception as e:
+        print(f"[config] failed to save: {e!r}")
+        await interaction.followup.send(f"⚠️ Failed to save configuration: {e}", ephemeral=True)
+        return
+
+    changed = ", ".join(updates.keys())
+    embed = discord.Embed(
+        title="✅ Configuration Updated",
+        description=f"Updated: **{changed}**",
+        color=RED,
+    )
+    embed.set_footer(text="Run /config with no options to see all current settings.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 def fmt_num(n: int) -> str:
@@ -591,9 +694,14 @@ async def announce(interaction: discord.Interaction, title: str, message: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     # Post into the announcement channel that belongs to whichever server this
-    # command was run in, falling back to the original default if this server
-    # isn't in the map yet.
-    target_channel_id = ANNOUNCE_CHANNELS.get(interaction.guild_id, ANNOUNCE_CHANNEL_ID)
+    # command was run in: check this server's /config setting first, falling
+    # back to the legacy hardcoded map (for the original WOLVES servers), and
+    # finally the overall default.
+    config = await server_config.get_config(interaction.guild_id)
+    target_channel_id = (
+        config.get("announce_channel_id")
+        or ANNOUNCE_CHANNELS.get(interaction.guild_id, ANNOUNCE_CHANNEL_ID)
+    )
 
     channel = bot.get_channel(target_channel_id)
     if channel is None:
@@ -605,7 +713,8 @@ async def announce(interaction: discord.Interaction, title: str, message: str):
 
     if channel is None:
         await interaction.followup.send(
-            "⚠️ Could not find the announcement channel for this server. Check ANNOUNCE_CHANNELS and bot permissions.",
+            "⚠️ Could not find the announcement channel for this server. "
+            "An admin can set one with `/config announce_channel:#channel-name`.",
             ephemeral=True,
         )
         return
@@ -719,6 +828,15 @@ async def announce_error(interaction: discord.Interaction, error):
     print(f"[announce] error: {error!r}")
     if isinstance(error, app_commands.MissingPermissions):
         await _send_error(interaction, "🚫 You need `Manage Messages` permission to use this command.")
+    else:
+        await _send_error(interaction, f"⚠️ Error: {error}")
+
+
+@config.error
+async def config_error(interaction: discord.Interaction, error):
+    print(f"[config] error: {error!r}")
+    if isinstance(error, app_commands.MissingPermissions):
+        await _send_error(interaction, "🚫 You need `Administrator` permission to use this command.")
     else:
         await _send_error(interaction, f"⚠️ Error: {error}")
 

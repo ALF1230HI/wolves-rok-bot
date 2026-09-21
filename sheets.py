@@ -1,9 +1,10 @@
 """
-Google Sheets integration for the WOLVES | BRAVIA 3953 bot.
+Google Sheets integration for /donate.
 
-Writes donation records to the "Alliance Bank Donations Tracker" spreadsheet
-using a Google service account. Runs the blocking gspread calls in a thread
-so they don't block the bot's event loop.
+Writes donation records to whichever spreadsheet a Discord server has
+configured via /config (see server_config.py) using the bot's single shared
+Google service account. Runs the blocking gspread calls in a thread so they
+don't block the bot's event loop.
 """
 
 import os
@@ -25,15 +26,29 @@ GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "google_credentia
 # ...or (useful on hosts like Railway where you can't upload a file) paste the
 # entire JSON key contents into a GOOGLE_CREDENTIALS_JSON environment variable.
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-DONATIONS_SHEET_ID = os.getenv("DONATIONS_SHEET_ID", "1spszkPihGZ9IIbe_v3Q2KtEai2awX1JITRxE09EzY4E")
-DONATIONS_TAB_NAME = os.getenv("DONATIONS_TAB_NAME", "Donations")
-ALLIANCE_MEMBERS_TAB_NAME = os.getenv("ALLIANCE_MEMBERS_TAB_NAME", "Alliance Members")
 
-# Column order must match the sheet's header row exactly:
+# Column order must match each configured sheet's header row exactly:
 # Date | Alliance Member | Food | Wood | Stone | Gold
 RESOURCE_COLUMNS = ["Food", "Wood", "Stone", "Gold"]
 
 _client = None
+_service_account_email = None
+
+
+def get_service_account_email() -> str:
+    """Return the bot's Google service account email, so admins know exactly
+    which account to share their donations spreadsheet with in /config."""
+    global _service_account_email
+    if _service_account_email is None:
+        if GOOGLE_CREDENTIALS_JSON:
+            info = json.loads(GOOGLE_CREDENTIALS_JSON)
+        elif os.path.exists(GOOGLE_CREDENTIALS_PATH):
+            with open(GOOGLE_CREDENTIALS_PATH) as f:
+                info = json.load(f)
+        else:
+            return "the bot's service account (credentials not found)"
+        _service_account_email = info.get("client_email", "the bot's service account")
+    return _service_account_email
 
 
 def _get_client():
@@ -55,8 +70,7 @@ def _get_client():
     return _client
 
 
-
-def _ensure_member_exists_sync(sheet, display_name: str):
+def _ensure_member_exists_sync(sheet, display_name: str, members_tab_name: str):
     """Make sure `display_name` has a row in the Alliance Members tab.
 
     The Donation Summary tab has SUMIF formulas pre-filled down to row 500
@@ -64,7 +78,7 @@ def _ensure_member_exists_sync(sheet, display_name: str):
     is enough for their donation totals to start showing up automatically —
     no need to touch Donation Summary directly.
     """
-    members_ws = sheet.worksheet(ALLIANCE_MEMBERS_TAB_NAME)
+    members_ws = sheet.worksheet(members_tab_name)
     existing_names = members_ws.col_values(1)  # column A, includes header
     # Case-insensitive match so "wren" and "Wren" aren't treated as different people
     normalized_existing = {name.strip().lower() for name in existing_names[1:] if name.strip()}
@@ -72,15 +86,22 @@ def _ensure_member_exists_sync(sheet, display_name: str):
         members_ws.append_row([display_name, ""], value_input_option="USER_ENTERED")
 
 
-def _append_donation_sync(display_name: str, resources: dict, date_str: str):
+def _append_donation_sync(
+    display_name: str,
+    resources: dict,
+    date_str: str,
+    sheet_id: str,
+    donations_tab_name: str,
+    members_tab_name: str,
+):
     client = _get_client()
-    sheet = client.open_by_key(DONATIONS_SHEET_ID)
+    sheet = client.open_by_key(sheet_id)
 
     # Add the donor to Alliance Members first (if they're not already there)
     # so the Donation Summary formulas pick up their totals right away.
-    _ensure_member_exists_sync(sheet, display_name)
+    _ensure_member_exists_sync(sheet, display_name, members_tab_name)
 
-    worksheet = sheet.worksheet(DONATIONS_TAB_NAME)
+    worksheet = sheet.worksheet(donations_tab_name)
     row = [date_str, display_name]
     for col in RESOURCE_COLUMNS:
         amount = resources.get(col, 0)
@@ -89,8 +110,15 @@ def _append_donation_sync(display_name: str, resources: dict, date_str: str):
     worksheet.append_row(row, value_input_option="USER_ENTERED")
 
 
-async def append_donation(display_name: str, resources: dict):
-    """Append a new donation row. `resources` maps e.g. {'Food': 5000000, 'Gold': 2000000}.
+async def append_donation(
+    display_name: str,
+    resources: dict,
+    sheet_id: str,
+    donations_tab_name: str = "Donations",
+    members_tab_name: str = "Alliance Members",
+):
+    """Append a new donation row to the given spreadsheet/tabs. `resources`
+    maps e.g. {'Food': 5000000, 'Gold': 2000000}.
 
     Also ensures the donor exists in the Alliance Members tab so the
     Donation Summary tab's formulas (which key off that list) include them.
@@ -100,4 +128,12 @@ async def append_donation(display_name: str, resources: dict):
     """
     now = datetime.now(dt_timezone.utc)
     date_str = f"{now.month}/{now.day}/{now.strftime('%y')}"
-    await asyncio.to_thread(_append_donation_sync, display_name, resources, date_str)
+    await asyncio.to_thread(
+        _append_donation_sync,
+        display_name,
+        resources,
+        date_str,
+        sheet_id,
+        donations_tab_name,
+        members_tab_name,
+    )
