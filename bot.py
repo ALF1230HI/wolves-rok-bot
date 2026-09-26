@@ -15,6 +15,7 @@ Setup:
 
 import os
 import re
+import io
 import time
 import discord
 import aiohttp
@@ -392,9 +393,19 @@ async def donate(
     )
     for name, amount in donated.items():
         embed.add_field(name=name, value=fmt_num(amount), inline=True)
-    embed.set_image(url=proof.url)
+
+    # Re-attach the screenshot's actual bytes as a file on this new message and
+    # reference it via attachment://, rather than hotlinking proof.url directly.
+    # Hotlinking a Discord CDN URL from a different message/interaction into a
+    # brand new embed is unreliable (signed URL params don't always resolve),
+    # which is why the image sometimes silently failed to show up. Re-uploading
+    # it here guarantees it renders every time.
+    proof_bytes = await proof.read()
+    safe_filename = proof.filename or "proof.png"
+    proof_file = discord.File(io.BytesIO(proof_bytes), filename=safe_filename)
+    embed.set_image(url=f"attachment://{safe_filename}")
     embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
-    await interaction.followup.send(embed=embed)
+    await interaction.followup.send(embed=embed, file=proof_file)
 
 
 @bot.tree.command(name="config", description="(Admin) View or change this server's bot settings")
