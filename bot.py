@@ -303,50 +303,6 @@ async def shop(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-# In-memory cache of the "Donation Tracker" webhook per channel, so /donate
-# doesn't have to re-list/create a webhook on every single invocation. Lost on
-# restart, which is fine - it just gets re-fetched (found by name) next time.
-_donation_webhook_cache: dict[int, discord.Webhook] = {}
-
-
-async def get_donation_webhook(channel) -> discord.Webhook | None:
-    """Get (or create) a webhook named 'Donation Tracker' in this channel, so
-    /donate's confirmation can be posted under that name/avatar instead of the
-    bot's own - slash command responses can't be renamed per-command, but
-    webhook messages can. Returns None (caller should fall back to a normal
-    message) if this isn't a real guild text channel, or the bot lacks the
-    'Manage Webhooks' permission here.
-    """
-    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-        return None
-
-    # Webhooks can only be created directly on a text channel, not a thread -
-    # if /donate was run inside a thread, attach the webhook to its parent.
-    target_channel = channel.parent if isinstance(channel, discord.Thread) else channel
-    if target_channel is None:
-        return None
-
-    cached = _donation_webhook_cache.get(target_channel.id)
-    if cached is not None:
-        return cached
-
-    try:
-        webhooks = await target_channel.webhooks()
-        webhook = discord.utils.get(webhooks, name="Donation Tracker")
-        if webhook is None:
-            webhook = await target_channel.create_webhook(
-                name="Donation Tracker", reason="Used by /donate to post donation confirmations"
-            )
-        _donation_webhook_cache[target_channel.id] = webhook
-        return webhook
-    except discord.Forbidden:
-        print(f"[donate] Missing 'Manage Webhooks' permission in #{target_channel}; using normal bot message instead.")
-        return None
-    except Exception as e:
-        print(f"[donate] Failed to get/create donation webhook: {e!r}")
-        return None
-
-
 @bot.tree.command(name="donate", description="Record a donation to the alliance bank (logs to the Google Sheet)")
 @app_commands.describe(
     food="Amount of Food donated (optional)",
@@ -449,37 +405,6 @@ async def donate(
     proof_file = discord.File(io.BytesIO(proof_bytes), filename=safe_filename)
     embed.set_image(url=f"attachment://{safe_filename}")
     embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
-
-    # Post the confirmation under a "Donation Tracker" identity (name + avatar)
-    # instead of the bot's own name, via a real channel webhook - slash command
-    # responses can't be renamed per-command, only webhook messages can.
-    webhook = await get_donation_webhook(interaction.channel)
-    if webhook is not None:
-        try:
-            send_kwargs = {}
-            if isinstance(interaction.channel, discord.Thread):
-                send_kwargs["thread"] = interaction.channel
-            await webhook.send(
-                embed=embed,
-                file=proof_file,
-                username="Donation Tracker",
-                avatar_url=bot.user.display_avatar.url,
-                **send_kwargs,
-            )
-            # The interaction still needs to be resolved (it's currently
-            # showing "Bot is thinking..."); since the real confirmation was
-            # already posted above via the webhook, just remove that
-            # placeholder instead of leaving a redundant second message.
-            await interaction.delete_original_response()
-            return
-        except Exception as e:
-            print(f"[donate] webhook send failed, falling back to normal message: {e!r}")
-            # Bytes/file objects can only be sent once - rebuild the file before
-            # retrying via the normal (non-webhook) path below.
-            proof_file = discord.File(io.BytesIO(proof_bytes), filename=safe_filename)
-
-    # Fallback: no webhook permission, or the webhook send failed. Post as the
-    # bot normally would, so /donate still works even without Manage Webhooks.
     await interaction.followup.send(embed=embed, file=proof_file)
 
 
