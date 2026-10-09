@@ -318,11 +318,18 @@ async def send_discord_confirmation(channel_id: int, display_name: str, donated:
                 print(f"[webapp] Discord post failed ({resp.status}): {text}")
 
 
+FORUM_CHANNEL_TYPE = 15
+
+
 async def create_support_ticket(tickets_channel_id: int, user_id: int, display_name: str, issue: str, from_channel_id: int = None):
-    """Create a private thread in the configured tickets channel, add the
-    reporter to it, and post the issue as an embed. Mirrors what the
-    in-Discord /ticket command does, but via plain REST calls since this
-    process has no discord.py Client of its own."""
+    """Create a ticket in the configured tickets channel, add the reporter
+    to it, and post the issue as an embed. Mirrors what the in-Discord
+    /ticket command does, but via plain REST calls since this process has
+    no discord.py Client of its own.
+
+    Supports both a plain text channel (ticket = a private thread) and a
+    forum channel (ticket = a forum post, which can't be made private --
+    its visibility is whatever the forum channel's own permissions are)."""
     if not DISCORD_BOT_TOKEN:
         print("[webapp] no DISCORD_BOT_TOKEN set, skipping ticket creation")
         return False
@@ -330,11 +337,36 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
     thread_name = f"ticket-{display_name}"[:100]
 
+    embed = {
+        "title": "🎫 New Support Ticket",
+        "description": issue,
+        "color": 0xFF0000,
+        "fields": [{"name": "Opened by", "value": f"<@{user_id}>", "inline": True}],
+        "footer": {"text": "WOLVES 🐺 | BRAVIA 3953 • Support Tickets (via donation site)"},
+    }
+    if from_channel_id:
+        embed["fields"].append({"name": "From channel", "value": f"<#{from_channel_id}>", "inline": True})
+
     async with ClientSession() as session:
+        async with session.get(f"{DISCORD_API}/channels/{tickets_channel_id}", headers=headers) as resp:
+            if resp.status >= 300:
+                text = await resp.text()
+                print(f"[webapp] couldn't look up tickets channel ({resp.status}): {text}")
+                return False
+            channel_info = await resp.json()
+        is_forum = channel_info.get("type") == FORUM_CHANNEL_TYPE
+
+        if is_forum:
+            # Forum posts carry their starter message in the same request
+            # that creates them -- there's no separate "type" for private
+            # forum posts, so this post's visibility is whatever the forum
+            # channel's own permissions allow.
+            body = {"name": thread_name, "message": {"embeds": [embed]}}
+        else:
+            body = {"name": thread_name, "type": 12, "auto_archive_duration": 1440}
+
         async with session.post(
-            f"{DISCORD_API}/channels/{tickets_channel_id}/threads",
-            json={"name": thread_name, "type": 12, "auto_archive_duration": 1440},
-            headers=headers,
+            f"{DISCORD_API}/channels/{tickets_channel_id}/threads", json=body, headers=headers
         ) as resp:
             if resp.status >= 300:
                 text = await resp.text()
@@ -350,22 +382,15 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
                 text = await resp.text()
                 print(f"[webapp] adding user to ticket thread failed ({resp.status}): {text}")
 
-        embed = {
-            "title": "🎫 New Support Ticket",
-            "description": issue,
-            "color": 0xFF0000,
-            "fields": [{"name": "Opened by", "value": f"<@{user_id}>", "inline": True}],
-            "footer": {"text": "WOLVES 🐺 | BRAVIA 3953 • Support Tickets (via donation site)"},
-        }
-        if from_channel_id:
-            embed["fields"].append({"name": "From channel", "value": f"<#{from_channel_id}>", "inline": True})
-
-        async with session.post(
-            f"{DISCORD_API}/channels/{thread_id}/messages", json={"embeds": [embed]}, headers=headers
-        ) as resp:
-            if resp.status >= 300:
-                text = await resp.text()
-                print(f"[webapp] posting ticket message failed ({resp.status}): {text}")
+        if not is_forum:
+            # Text-channel private threads start empty -- post the embed as
+            # their first message. Forum posts already got it above.
+            async with session.post(
+                f"{DISCORD_API}/channels/{thread_id}/messages", json={"embeds": [embed]}, headers=headers
+            ) as resp:
+                if resp.status >= 300:
+                    text = await resp.text()
+                    print(f"[webapp] posting ticket message failed ({resp.status}): {text}")
 
     return True
 

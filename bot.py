@@ -23,6 +23,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from typing import Union
 from dotenv import load_dotenv
 
 import stats_db
@@ -394,7 +395,7 @@ async def config(
     alliance_members_tab: str = None,
     bank_name: str = None,
     announce_channel: discord.TextChannel = None,
-    tickets_channel: discord.TextChannel = None,
+    tickets_channel: Union[discord.TextChannel, discord.ForumChannel] = None,
 ):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -505,27 +506,6 @@ async def ticket(interaction: discord.Interaction, issue: str):
         return
 
     thread_name = f"ticket-{interaction.user.name}"[:100]
-    try:
-        thread = await channel.create_thread(
-            name=thread_name,
-            type=discord.ChannelType.private_thread,
-            auto_archive_duration=1440,
-            reason=f"Support ticket opened by {interaction.user}",
-        )
-        await thread.add_user(interaction.user)
-    except discord.Forbidden:
-        print(f"[ticket] missing permissions to create a private thread in #{channel}")
-        await interaction.followup.send(
-            "⚠️ I don't have permission to create private threads in the tickets channel. "
-            "An admin needs to grant me **Create Private Threads** and **Manage Threads** there.",
-            ephemeral=True,
-        )
-        return
-    except Exception as e:
-        print(f"[ticket] failed to create thread: {e!r}")
-        await interaction.followup.send(f"⚠️ Failed to open a ticket: {e}", ephemeral=True)
-        return
-
     embed = discord.Embed(
         title="🎫 New Support Ticket",
         description=issue,
@@ -538,9 +518,42 @@ async def ticket(interaction: discord.Interaction, issue: str):
         inline=True,
     )
     embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Support Tickets")
-    await thread.send(embed=embed)
+
+    try:
+        if isinstance(channel, discord.ForumChannel):
+            # Forum channels don't support private threads — each ticket is a
+            # normal forum post, with the embed as its starter message.
+            thread_with_message = await channel.create_thread(
+                name=thread_name,
+                embed=embed,
+                reason=f"Support ticket opened by {interaction.user}",
+            )
+            thread = thread_with_message.thread
+        else:
+            thread = await channel.create_thread(
+                name=thread_name,
+                type=discord.ChannelType.private_thread,
+                auto_archive_duration=1440,
+                reason=f"Support ticket opened by {interaction.user}",
+            )
+            await thread.send(embed=embed)
+        await thread.add_user(interaction.user)
+    except discord.Forbidden:
+        print(f"[ticket] missing permissions to create a ticket in #{channel}")
+        await interaction.followup.send(
+            "⚠️ I don't have permission to create tickets in the tickets channel. "
+            "An admin needs to grant me **Create Posts**/**Create Private Threads** and "
+            "**Manage Threads** there.",
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        print(f"[ticket] failed to create thread: {e!r}")
+        await interaction.followup.send(f"⚠️ Failed to open a ticket: {e}", ephemeral=True)
+        return
 
     await interaction.followup.send(f"🎫 Ticket created: {thread.mention}", ephemeral=True)
+
 
 
 def fmt_num(n: int) -> str:
