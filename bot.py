@@ -338,6 +338,14 @@ async def donate(interaction: discord.Interaction):
         )
         return
 
+    # Defer immediately: server_config.get_config() below can hit the Google
+    # Sheets API, which can easily take longer than Discord's 3-second
+    # response window, especially on a cold call. Deferring first (like the
+    # old /donate did before its sheets.append_donation() call) buys up to
+    # 15 minutes instead, avoiding the "Unknown interaction" / "The
+    # application did not respond" error from an expired interaction token.
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     config = await server_config.get_config(interaction.guild_id)
     token = donate_token.generate_token({
         "g": interaction.guild_id,
@@ -364,7 +372,8 @@ async def donate(interaction: discord.Interaction):
         discord.ui.Button(label="Open Donation Form", style=discord.ButtonStyle.link, url=link, emoji="📝")
     )
 
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
 
 
 
