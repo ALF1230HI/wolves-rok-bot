@@ -15,10 +15,10 @@ Setup:
 
 import os
 import re
-import io
 import time
 import discord
 import aiohttp
+from aiohttp import web as aiohttp_web
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta
@@ -28,6 +28,8 @@ from dotenv import load_dotenv
 import stats_db
 import sheets
 import server_config
+import donate_token
+import webapp
 
 load_dotenv()
 
@@ -217,6 +219,25 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Public base URL of the donation website (this same service, with a web port
+# exposed). /donate links point here. Set via the WEBSITE_BASE_URL env var
+# once a public domain has been generated for this Railway service.
+WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "").rstrip("/")
+
+_web_server_started = False
+
+
+async def start_web_server():
+    """Run the donation website (webapp.py) alongside the bot, in the same
+    process/event loop, bound to the PORT Railway assigns this service."""
+    port = int(os.getenv("PORT", "8080"))
+    app = webapp.build_app()
+    runner = aiohttp_web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp_web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"[web] donation site listening on 0.0.0.0:{port}")
+
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
@@ -228,8 +249,13 @@ async def on_interaction(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
+    global _web_server_started
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     await stats_db.init_db()
+
+    if not _web_server_started:
+        _web_server_started = True
+        bot.loop.create_task(start_web_server())
 
     try:
         if GUILD_IDS:
@@ -303,109 +329,43 @@ async def shop(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="donate", description="Record a donation to the alliance bank (logs to the Google Sheet)")
-@app_commands.describe(
-    food="Amount of Food donated (optional)",
-    wood="Amount of Wood donated (optional)",
-    stone="Amount of Stone donated (optional)",
-    gold="Amount of Gold donated (optional)",
-    proof="Screenshot of your in-game 'Assistance Report' showing this donation (required)",
-)
-async def donate(
-    interaction: discord.Interaction,
-    proof: discord.Attachment = None,
-    food: int = 0,
-    wood: int = 0,
-    stone: int = 0,
-    gold: int = 0,
-):
-    t0 = time.monotonic()
-    print(f"[donate] invoked, created_at age = {time.time() - interaction.created_at.timestamp():.2f}s")
-
-    # A proof screenshot is required so officers can verify the donation.
-    if proof is None:
-        embed = discord.Embed(
-            title="📸 Screenshot Required",
-            description=(
-                "Please attach a screenshot of your in-game **Assistance Report** showing "
-                "the resources you sent, like the example below.\n\n"
-                "In-game: **Alliance → Assistance → Assistance Report**, then screenshot the "
-                "entry for the donation you just made and run `/donate` again with it attached "
-                "(use the `proof` option)."
-            ),
-            color=RED,
-        )
-        embed.set_image(url="attachment://donation_proof_example.png")
-        embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
-        example_file = discord.File(
-            "assets/donation_proof_example.png", filename="donation_proof_example.png"
-        )
-        await interaction.response.send_message(embed=embed, file=example_file, ephemeral=True)
-        return
-
-    await interaction.response.defer(thinking=True)
-    print(f"[donate] defer() completed in {time.monotonic() - t0:.2f}s")
-
-    resources = {"Food": food, "Wood": wood, "Stone": stone, "Gold": gold}
-    donated = {k: v for k, v in resources.items() if v and v > 0}
-
-    if not donated:
-        await interaction.followup.send(
-            "⚠️ You need to donate at least one resource (Food, Wood, Stone, or Gold).", ephemeral=True
+@bot.tree.command(name="donate", description="Get your personal link to log a donation to the alliance bank")
+async def donate(interaction: discord.Interaction):
+    if not WEBSITE_BASE_URL:
+        await interaction.response.send_message(
+            "⚠️ The donation website isn't configured yet (missing `WEBSITE_BASE_URL`). Contact the bot operator.",
+            ephemeral=True,
         )
         return
 
-    if any(v < 0 for v in resources.values()):
-        await interaction.followup.send("⚠️ Donation amounts can't be negative.", ephemeral=True)
-        return
-
-    display_name = interaction.user.display_name
     config = await server_config.get_config(interaction.guild_id)
-
-    try:
-        await sheets.append_donation(
-            display_name,
-            donated,
-            sheet_id=config["donations_sheet_id"],
-            donations_tab_name=config["donations_tab_name"],
-            members_tab_name=config["alliance_members_tab_name"],
-        )
-    except FileNotFoundError as e:
-        print(f"[donate] sheets error: {e}")
-        await interaction.followup.send(
-            "⚠️ The bank tracker isn't set up yet (missing Google credentials). Contact an officer.",
-            ephemeral=True,
-        )
-        return
-    except Exception as e:
-        print(f"[donate] sheets error: {e!r}")
-        await interaction.followup.send(
-            f"⚠️ Failed to record your donation in the bank tracker: {e}\n"
-            f"-# If this server hasn't run `/config` yet to set its donations sheet, an admin should do that first.",
-            ephemeral=True,
-        )
-        return
+    token = donate_token.generate_token({
+        "g": interaction.guild_id,
+        "c": interaction.channel_id,
+        "u": interaction.user.id,
+        "n": interaction.user.display_name,
+        "bank": config["bank_name"],
+    })
+    link = f"{WEBSITE_BASE_URL}/donate?token={token}"
 
     embed = discord.Embed(
-        title="🏦 Donation Recorded",
-        description=f"Thank you, **{display_name}**! Your donation has been logged.",
+        title="🏦 Donate to the Alliance Bank",
+        description=(
+            "Tap the button below to open your personal donation page. It walks you through "
+            "exactly how to donate, lets you enter what you sent, and attach your proof screenshot.\n\n"
+            "This link is just for you and expires in **30 minutes**."
+        ),
         color=RED,
     )
-    for name, amount in donated.items():
-        embed.add_field(name=name, value=fmt_num(amount), inline=True)
-
-    # Re-attach the screenshot's actual bytes as a file on this new message and
-    # reference it via attachment://, rather than hotlinking proof.url directly.
-    # Hotlinking a Discord CDN URL from a different message/interaction into a
-    # brand new embed is unreliable (signed URL params don't always resolve),
-    # which is why the image sometimes silently failed to show up. Re-uploading
-    # it here guarantees it renders every time.
-    proof_bytes = await proof.read()
-    safe_filename = proof.filename or "proof.png"
-    proof_file = discord.File(io.BytesIO(proof_bytes), filename=safe_filename)
-    embed.set_image(url=f"attachment://{safe_filename}")
     embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Alliance Bank Donations Tracker")
-    await interaction.followup.send(embed=embed, file=proof_file)
+
+    view = discord.ui.View()
+    view.add_item(
+        discord.ui.Button(label="Open Donation Form", style=discord.ButtonStyle.link, url=link, emoji="📝")
+    )
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 
 
 @bot.tree.command(name="config", description="(Admin) View or change this server's bot settings")
@@ -415,6 +375,7 @@ async def donate(
     alliance_members_tab="Tab name with the member list used by Donation Summary formulas (default: 'Alliance Members')",
     bank_name="Your alliance bank's exact in-game name, shown to members in proof-screenshot instructions",
     announce_channel="Channel where /announce should post for this server",
+    tickets_channel="Channel where /ticket (and the donation site's 'Get Help' button) should create private support threads",
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def config(
@@ -424,11 +385,12 @@ async def config(
     alliance_members_tab: str = None,
     bank_name: str = None,
     announce_channel: discord.TextChannel = None,
+    tickets_channel: discord.TextChannel = None,
 ):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     # No options given -> just show the server's current settings.
-    if not any([donations_sheet, donations_tab, alliance_members_tab, bank_name, announce_channel]):
+    if not any([donations_sheet, donations_tab, alliance_members_tab, bank_name, announce_channel, tickets_channel]):
         current = await server_config.get_config(interaction.guild_id)
         embed = discord.Embed(
             title="⚙️ Current Server Configuration",
@@ -445,6 +407,11 @@ async def config(
         embed.add_field(
             name="Announce Channel",
             value=f"<#{current['announce_channel_id']}>" if current["announce_channel_id"] else "Not set",
+            inline=True,
+        )
+        embed.add_field(
+            name="Tickets Channel",
+            value=f"<#{current['tickets_channel_id']}>" if current["tickets_channel_id"] else "Not set",
             inline=True,
         )
         embed.set_footer(text="Run /config with an option to change a setting, e.g. /config donations_sheet:<url>")
@@ -478,6 +445,8 @@ async def config(
         updates["bank_name"] = bank_name
     if announce_channel:
         updates["announce_channel_id"] = announce_channel.id
+    if tickets_channel:
+        updates["tickets_channel_id"] = tickets_channel.id
 
     try:
         await server_config.set_config(
@@ -499,6 +468,70 @@ async def config(
     )
     embed.set_footer(text="Run /config with no options to see all current settings.")
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="ticket", description="Open a private support ticket for an issue (e.g. /donate or the donation site isn't working)")
+@app_commands.describe(issue="Briefly describe the problem you're having")
+async def ticket(interaction: discord.Interaction, issue: str):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    config = await server_config.get_config(interaction.guild_id)
+    tickets_channel_id = config.get("tickets_channel_id")
+
+    if not tickets_channel_id:
+        await interaction.followup.send(
+            "⚠️ This server hasn't set up a tickets channel yet. An admin needs to run "
+            "`/config tickets_channel:#your-tickets-channel` first.",
+            ephemeral=True,
+        )
+        return
+
+    channel = interaction.guild.get_channel(tickets_channel_id) if interaction.guild else None
+    if channel is None:
+        await interaction.followup.send(
+            "⚠️ The configured tickets channel no longer exists. An admin needs to run "
+            "`/config tickets_channel:#your-tickets-channel` again to fix it.",
+            ephemeral=True,
+        )
+        return
+
+    thread_name = f"ticket-{interaction.user.name}"[:100]
+    try:
+        thread = await channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.private_thread,
+            auto_archive_duration=1440,
+            reason=f"Support ticket opened by {interaction.user}",
+        )
+        await thread.add_user(interaction.user)
+    except discord.Forbidden:
+        print(f"[ticket] missing permissions to create a private thread in #{channel}")
+        await interaction.followup.send(
+            "⚠️ I don't have permission to create private threads in the tickets channel. "
+            "An admin needs to grant me **Create Private Threads** and **Manage Threads** there.",
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        print(f"[ticket] failed to create thread: {e!r}")
+        await interaction.followup.send(f"⚠️ Failed to open a ticket: {e}", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎫 New Support Ticket",
+        description=issue,
+        color=RED,
+    )
+    embed.add_field(name="Opened by", value=interaction.user.mention, inline=True)
+    embed.add_field(
+        name="From channel",
+        value=interaction.channel.mention if interaction.channel else "Unknown",
+        inline=True,
+    )
+    embed.set_footer(text="WOLVES 🐺 | BRAVIA 3953 • Support Tickets")
+    await thread.send(embed=embed)
+
+    await interaction.followup.send(f"🎫 Ticket created: {thread.mention}", ephemeral=True)
 
 
 def fmt_num(n: int) -> str:

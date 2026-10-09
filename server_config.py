@@ -12,7 +12,7 @@ header row (created once, manually, by the operator):
 
     Guild ID | Guild Name | Added On (UTC) | Configured By |
     Donations Sheet ID | Donations Tab Name | Alliance Members Tab Name |
-    Bank Name | Announce Channel ID | Last Updated (UTC)
+    Bank Name | Announce Channel ID | Last Updated (UTC) | Tickets Channel ID
 """
 
 import os
@@ -40,6 +40,7 @@ HEADERS = [
     "Bank Name",
     "Announce Channel ID",
     "Last Updated (UTC)",
+    "Tickets Channel ID",
 ]
 
 # Column indexes (1-based, matching HEADERS order) for targeted cell updates.
@@ -53,6 +54,7 @@ COL_MEMBERS_TAB = 7
 COL_BANK_NAME = 8
 COL_ANNOUNCE_CHANNEL = 9
 COL_LAST_UPDATED = 10
+COL_TICKETS_CHANNEL = 11
 
 # Fallback settings for any guild that hasn't run /config yet — keeps the
 # original WOLVES servers working out of the box without needing to
@@ -66,6 +68,7 @@ DEFAULT_CONFIG = {
     "alliance_members_tab_name": os.getenv("ALLIANCE_MEMBERS_TAB_NAME", "Alliance Members"),
     "bank_name": os.getenv("BANK_NAME", "KD Bank 53"),
     "announce_channel_id": None,
+    "tickets_channel_id": None,
 }
 
 _CACHE_TTL_SECONDS = 60
@@ -94,6 +97,11 @@ def _row_to_config(row: dict) -> dict:
         "announce_channel_id": (
             int(row["Announce Channel ID"])
             if str(row.get("Announce Channel ID") or "").strip().isdigit()
+            else None
+        ),
+        "tickets_channel_id": (
+            int(row["Tickets Channel ID"])
+            if str(row.get("Tickets Channel ID") or "").strip().isdigit()
             else None
         ),
     }
@@ -152,6 +160,7 @@ def _upsert_config_sync(
         "alliance_members_tab_name": COL_MEMBERS_TAB,
         "bank_name": COL_BANK_NAME,
         "announce_channel_id": COL_ANNOUNCE_CHANNEL,
+        "tickets_channel_id": COL_TICKETS_CHANNEL,
     }
 
     if row_idx is None:
