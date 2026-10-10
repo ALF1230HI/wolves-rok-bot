@@ -318,6 +318,13 @@ def render_ticket_form(payload: dict, demo: bool, token: str, error: str = None)
         <label>What's not working?</label>
         <textarea name="issue" rows="5" required
           placeholder="e.g. the submit button isn't doing anything, or my screenshot won't upload..."></textarea>
+
+        <label>Screenshot (optional)</label>
+        <label class="file-drop">
+          <span class="file-drop-text">📸 Tap to attach a screenshot — the error, or your Assistance Report</span>
+          <input type="file" name="screenshot" accept="image/*" onchange="window.__wolvesFileChange(this)">
+        </label>
+
         {error_html}
         <button type="submit">Open Ticket</button>
       </form>
@@ -382,7 +389,7 @@ async def send_discord_confirmation(channel_id: int, display_name: str, donated:
 FORUM_CHANNEL_TYPE = 15
 
 
-async def create_support_ticket(tickets_channel_id: int, user_id: int, display_name: str, issue: str, from_channel_id: int = None):
+async def create_support_ticket(tickets_channel_id: int, user_id: int, display_name: str, issue: str, from_channel_id: int = None, image: dict = None):
     """Create a ticket in the configured tickets channel, add the reporter
     to it, and post the issue as an embed. Mirrors what the in-Discord
     /ticket command does, but via plain REST calls since this process has
@@ -458,8 +465,10 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
         # immediately. The "Still need help?" button is handled by the bot's
         # own gateway connection (matched purely by custom_id), so it works
         # the same whether the ticket was opened here or in Discord.
-        ai_result = await ai_helper.get_ai_response(issue)
-        ai_helper.start_session(thread_id, user_id, issue, ai_result["reply"])
+        images = ai_helper.prepare_images([image]) if image else []
+        ai_result = await ai_helper.get_ai_response(issue, images=images)
+        history_text = issue + (f"\n[📎 {len(images)} image attachment(s) included]" if images else "")
+        ai_helper.start_session(thread_id, user_id, history_text, ai_result["reply"])
         ai_embed = {
             "title": "🤖 Automated Suggestion",
             "description": ai_result["reply"],
@@ -524,6 +533,15 @@ async def handle_ticket_submit(request: web.Request):
     guild_id = payload.get("g")
     from_channel_id = payload.get("c")
 
+    screenshot = data.get("screenshot")
+    image = None
+    if screenshot is not None and getattr(screenshot, "filename", None):
+        image = {
+            "filename": screenshot.filename,
+            "mime_type": screenshot.content_type or "",
+            "data": screenshot.file.read(),
+        }
+
     if demo:
         print(f"[webapp][DEMO] would open ticket for guild={guild_id}: {display_name} -> {issue!r}")
         return web.Response(text=render_ticket_success(demo=True), content_type="text/html")
@@ -540,7 +558,7 @@ async def handle_ticket_submit(request: web.Request):
             content_type="text/html",
         )
 
-    ok = await create_support_ticket(tickets_channel_id, user_id, display_name, issue, from_channel_id)
+    ok = await create_support_ticket(tickets_channel_id, user_id, display_name, issue, from_channel_id, image=image)
     if not ok:
         return web.Response(
             text=render_error("Couldn't open a ticket automatically. Please contact an admin directly on Discord.", token=token),

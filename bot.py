@@ -509,9 +509,22 @@ async def config(
 
 
 @bot.tree.command(name="ticket", description="Open a private support ticket for an issue (e.g. /donate or the donation site isn't working)")
-@app_commands.describe(issue="Briefly describe the problem you're having")
-async def ticket(interaction: discord.Interaction, issue: str):
+@app_commands.describe(
+    issue="Briefly describe the problem you're having",
+    screenshot="Optional: attach a screenshot (e.g. the error, or your Assistance Report)",
+)
+async def ticket(interaction: discord.Interaction, issue: str, screenshot: discord.Attachment = None):
     await interaction.response.defer(ephemeral=True, thinking=True)
+
+    images = []
+    if screenshot is not None:
+        try:
+            raw = await screenshot.read()
+            images = ai_helper.prepare_images([
+                {"filename": screenshot.filename, "mime_type": screenshot.content_type or "", "data": raw}
+            ])
+        except Exception as e:
+            print(f"[ticket] failed to read attached screenshot: {e!r}")
 
     config = await server_config.get_config(interaction.guild_id)
     tickets_channel_id = config.get("tickets_channel_id")
@@ -580,20 +593,22 @@ async def ticket(interaction: discord.Interaction, issue: str):
         await interaction.followup.send(f"⚠️ Failed to open a ticket: {e}", ephemeral=True)
         return
 
-    await post_ai_ticket_response(thread, issue, interaction.user.id)
+    await post_ai_ticket_response(thread, issue, interaction.user.id, images=images)
 
     await interaction.followup.send(f"🎫 Ticket created: {thread.mention}", ephemeral=True)
 
 
-async def post_ai_ticket_response(thread, issue: str, opener_id: int):
+async def post_ai_ticket_response(thread, issue: str, opener_id: int, images: list = None):
     """Post an AI-generated first response in a freshly-created ticket
     thread/forum post, and immediately loop in the human helper if the AI
     isn't confident it solved things. Shared by /ticket and the website's
     'Get Help' flow (via webapp.py's own REST equivalent of this). Also
     starts the shared conversation-tracking session so follow-up messages
-    from the ticket opener keep getting AI replies (see on_message)."""
-    ai_result = await ai_helper.get_ai_response(issue)
-    ai_helper.start_session(thread.id, opener_id, issue, ai_result["reply"])
+    from the ticket opener keep getting AI replies (see on_message).
+    `images` (optional) is a list already run through ai_helper.prepare_images()."""
+    ai_result = await ai_helper.get_ai_response(issue, images=images)
+    history_text = issue + (f"\n[📎 {len(images)} image attachment(s) included]" if images else "")
+    ai_helper.start_session(thread.id, opener_id, history_text, ai_result["reply"])
 
     ai_embed = discord.Embed(
         title="🤖 Automated Suggestion",
@@ -690,13 +705,31 @@ async def on_message(message: discord.Message):
         return
 
     issue_text = (message.content or "").strip()
-    if not issue_text:
+
+    raw_images = []
+    for attachment in message.attachments:
+        content_type = (attachment.content_type or "").split(";")[0].strip().lower()
+        if not content_type.startswith("image/"):
+            continue
+        try:
+            raw_images.append({
+                "filename": attachment.filename,
+                "mime_type": content_type,
+                "data": await attachment.read(),
+            })
+        except Exception as e:
+            print(f"[ticket] failed to read attachment in thread {thread.id}: {e!r}")
+
+    images = ai_helper.prepare_images(raw_images)
+
+    if not issue_text and not images:
         return
 
-    ai_helper.append_turn(thread.id, "user", issue_text)
+    history_text = issue_text + (f"\n[📎 {len(images)} image attachment(s) included]" if images else "")
+    ai_helper.append_turn(thread.id, "user", history_text or "(member sent an image)")
     try:
         async with thread.typing():
-            result = await ai_helper.get_ai_followup(session["history"])
+            result = await ai_helper.get_ai_followup(session["history"], new_images=images)
     except Exception as e:
         print(f"[ticket] follow-up AI call failed for thread {thread.id}: {e!r}")
         return

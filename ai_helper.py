@@ -25,6 +25,7 @@ unanswered.
 
 import os
 import json
+import base64
 
 from aiohttp import ClientSession, ClientTimeout
 
@@ -42,10 +43,23 @@ HUMAN_HELPER_USER_ID = int(os.getenv("TICKET_HELPER_USER_ID", "15041921000137034
 # other than the ticket opener (i.e. a human helper) posts in the thread.
 TICKET_SESSIONS: dict = {}
 
-# How many of the most recent turns to actually send to the model. Keeps
-# latency and token usage bounded on long-running tickets; the full history
-# is still kept in memory for reference.
-MAX_HISTORY_TURNS = 12
+# How many of the most recent turns to actually send to the model. Gemini's
+# context window is large (128K+ tokens) and this is free-tier, so a ticket
+# conversation can run long without hitting real limits -- this just keeps
+# an absolute sane ceiling on latency/bandwidth for an extreme edge case.
+MAX_HISTORY_TURNS = 60
+
+# Only images from the CURRENT message are ever sent to Gemini -- older
+# images already discussed are represented in history as a short text note
+# instead of being re-uploaded every single turn (keeps requests small and
+# fast as a conversation grows). Gemini accepts PNG/JPEG/WEBP/HEIC/HEIF;
+# Discord screenshots are essentially always PNG or JPEG.
+MAX_IMAGES_PER_MESSAGE = 3
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+ALLOWED_IMAGE_MIME_TYPES = {
+    "image/png", "image/jpeg", "image/jpg", "image/webp", "image/heic", "image/heif",
+}
+
 
 SYSTEM_PROMPT = """You are a friendly, conversational support assistant for a Rise of Kingdoms \
 alliance's Discord bot. The bot has two member-facing features people can have trouble with:
@@ -87,6 +101,12 @@ with advice: an actual bug, a wrong number already recorded in the spreadsheet, 
 problem, or the member has clearly said they already tried your exact guide/fix and it still \
 didn't work. Simply not having enough detail yet, or it being the first message, is never a \
 reason for confident:false -- try the guide first.
+
+Members can attach screenshots (e.g. an error message, their Assistance Report, or the \
+donation web page). When an image is attached, actually look at it and use what you see to \
+help -- e.g. confirm whether a screenshot looks like a valid Assistance Report entry, read an \
+error message in it, or spot what's wrong on the page. If an image doesn't show what's needed, \
+say specifically what to send instead.
 
 Write a short, friendly reply (3-6 sentences, plain text, no markdown headers) using the \
 conversation so far for context so you don't repeat yourself turn over turn.
@@ -155,17 +175,56 @@ async def _generate(contents: list) -> dict:
         return dict(FALLBACK_RESULT)
 
 
-async def get_ai_response(issue: str) -> dict:
-    """First response to a freshly-opened ticket. Returns {"reply": str, "confident": bool}."""
-    return await _generate([{"role": "user", "parts": [{"text": issue}]}])
+def prepare_images(raw_images: list) -> list:
+    """Validates/filters a list of {"filename", "mime_type", "data" (raw bytes)}
+    dicts down to ones Gemini can actually accept, base64-encoding the kept
+    ones. Silently drops anything oversized/unsupported rather than failing
+    the whole request -- a bad attachment shouldn't block the AI reply."""
+    prepared = []
+    for img in raw_images or []:
+        if len(prepared) >= MAX_IMAGES_PER_MESSAGE:
+            break
+        mime_type = (img.get("mime_type") or "").split(";")[0].strip().lower()
+        data = img.get("data")
+        if not data or mime_type not in ALLOWED_IMAGE_MIME_TYPES:
+            continue
+        if len(data) > MAX_IMAGE_BYTES:
+            continue
+        prepared.append({"mime_type": mime_type, "b64": base64.b64encode(data).decode("ascii")})
+    return prepared
 
 
-async def get_ai_followup(history: list) -> dict:
-    """Continues a ticket conversation. `history` is a list of (role, text)
-    tuples, role being "user" or "model", oldest first. Returns
+def _build_parts(text: str, images: list) -> list:
+    parts = []
+    if text:
+        parts.append({"text": text})
+    for img in images or []:
+        parts.append({"inlineData": {"mimeType": img["mime_type"], "data": img["b64"]}})
+    if not parts:
+        parts.append({"text": "(no message content)"})
+    return parts
+
+
+async def get_ai_response(issue: str, images: list = None) -> dict:
+    """First response to a freshly-opened ticket. `images` (optional) is a
+    list already run through prepare_images(). Returns
     {"reply": str, "confident": bool}."""
+    return await _generate([{"role": "user", "parts": _build_parts(issue, images)}])
+
+
+async def get_ai_followup(history: list, new_images: list = None) -> dict:
+    """Continues a ticket conversation. `history` is a list of (role, text)
+    tuples, role being "user" or "model", oldest first -- the most recent
+    entry should be the member's latest message, already appended by the
+    caller. `new_images` (optional, already run through prepare_images())
+    are attached to that most recent user turn only; older turns are
+    text-only even if they originally had images (see MAX_IMAGES_PER_MESSAGE
+    note above). Returns {"reply": str, "confident": bool}."""
     turns = history[-MAX_HISTORY_TURNS:]
     contents = [{"role": role, "parts": [{"text": text}]} for role, text in turns if text]
+    if new_images and contents and contents[-1]["role"] == "user":
+        for img in new_images:
+            contents[-1]["parts"].append({"inlineData": {"mimeType": img["mime_type"], "data": img["b64"]}})
     if not contents:
         return dict(FALLBACK_RESULT)
     return await _generate(contents)
