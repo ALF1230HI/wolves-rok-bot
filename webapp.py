@@ -38,6 +38,15 @@ import ai_helper
 
 RED_HEX = "#FF0000"
 
+# Proof-screenshot uploads can legitimately be a few MB on modern phones
+# (especially PNG screenshots, which aren't as compressed as JPEGs), so the
+# default aiohttp request-body cap of 1MB is far too small and was rejecting
+# real donations with a raw "Maximum request body size exceeded" error.
+# 20MB comfortably covers normal phone screenshots while staying under
+# Discord's own attachment limits.
+MAX_UPLOAD_MB = 20
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_API = "https://discord.com/api/v10"
 
@@ -642,8 +651,47 @@ async def handle_donate_submit(request: web.Request):
     return web.Response(text=render_success(payload, donated, demo=False), content_type="text/html")
 
 
+@web.middleware
+async def error_middleware(request: web.Request, handler):
+    try:
+        return await handler(request)
+    except web.HTTPRequestEntityTooLarge:
+        body = f"""
+          <div class="result">
+            <div class="big">📦</div>
+            <h1>Screenshot too large</h1>
+            <p class="sub">That image is bigger than the {MAX_UPLOAD_MB}MB limit for proof screenshots.</p>
+          </div>
+          <p class="note">Try a smaller screenshot — cropping it to just the Assistance Report entry
+          usually helps — then go back and try again.</p>
+          <a class="btn-link" href="javascript:history.back()">&larr; Back</a>
+        """
+        return web.Response(
+            text=render_page("Screenshot too large", body, demo=False),
+            content_type="text/html",
+            status=413,
+        )
+    except web.HTTPException:
+        raise
+    except Exception as e:
+        print(f"[webapp] unhandled error on {request.path}: {e!r}")
+        body = """
+          <div class="result">
+            <div class="big">⚠️</div>
+            <h1>Something went wrong</h1>
+            <p class="sub">Please go back and try again. If it keeps happening, open a ticket from
+            Discord and let us know.</p>
+          </div>
+        """
+        return web.Response(
+            text=render_page("Something went wrong", body, demo=False),
+            content_type="text/html",
+            status=500,
+        )
+
+
 def build_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(client_max_size=MAX_UPLOAD_BYTES, middlewares=[error_middleware])
     app.router.add_get("/", handle_root)
     app.router.add_get("/demo", handle_demo)
     app.router.add_get("/donate", handle_donate_get)

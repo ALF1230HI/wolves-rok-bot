@@ -2,9 +2,10 @@
 
 Shared by both bot.py (the live Discord bot) and webapp.py (the donation
 website's "Get Help" flow) so a ticket gets the same automated help
-whichever way it was opened. Uses OpenAI's chat completions API directly
-over aiohttp (already a dependency everywhere else in this project) rather
-than adding the official SDK as a new dependency.
+whichever way it was opened. Uses Google's Gemini API directly over aiohttp
+(already a dependency everywhere else in this project) rather than adding
+the official SDK as a new dependency. Gemini's free tier requires no
+credit card and no billing, so this runs at zero ongoing cost.
 
 If anything goes wrong -- no API key configured, a network error, a bad
 response -- this fails safe to `confident: False`, so the human helper
@@ -17,9 +18,9 @@ import json
 
 from aiohttp import ClientSession, ClientTimeout
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_API = "https://api.openai.com/v1/chat/completions"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+GEMINI_API = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 # The human who gets looped in whenever the AI can't confidently resolve a
 # ticket itself, or the reporter says the suggestion didn't help.
@@ -52,6 +53,15 @@ information to solve confidently)?
 Respond with ONLY valid JSON in this exact shape:
 {"reply": "<your reply text>", "confident": true or false}"""
 
+RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "reply": {"type": "STRING"},
+        "confident": {"type": "BOOLEAN"},
+    },
+    "required": ["reply", "confident"],
+}
+
 
 async def get_ai_response(issue: str) -> dict:
     """Returns {"reply": str, "confident": bool}."""
@@ -62,30 +72,33 @@ async def get_ai_response(issue: str) -> dict:
         ),
         "confident": False,
     }
-    if not OPENAI_API_KEY:
-        print("[ai_helper] no OPENAI_API_KEY set, skipping AI response")
+    if not GEMINI_API_KEY:
+        print("[ai_helper] no GEMINI_API_KEY set, skipping AI response")
         return fallback
 
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
     body = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": issue},
-        ],
-        "response_format": {"type": "json_object"},
-        "max_tokens": 300,
-        "temperature": 0.4,
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"role": "user", "parts": [{"text": issue}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": RESPONSE_SCHEMA,
+            "maxOutputTokens": 300,
+            "temperature": 0.4,
+            # Keep latency down: this is a short classification + reply task,
+            # not something that benefits from extended "thinking" tokens.
+            "thinkingConfig": {"thinkingLevel": "low"},
+        },
     }
     try:
-        async with ClientSession(timeout=ClientTimeout(total=20)) as session:
-            async with session.post(OPENAI_API, json=body, headers=headers) as resp:
+        async with ClientSession(timeout=ClientTimeout(total=30)) as session:
+            async with session.post(GEMINI_API, json=body, headers=headers) as resp:
                 if resp.status >= 300:
                     text = await resp.text()
-                    print(f"[ai_helper] OpenAI request failed ({resp.status}): {text}")
+                    print(f"[ai_helper] Gemini request failed ({resp.status}): {text}")
                     return fallback
                 data = await resp.json()
-        content = data["choices"][0]["message"]["content"]
+        content = data["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(content)
         reply = str(parsed.get("reply", "")).strip()
         confident = bool(parsed.get("confident", False))
@@ -115,3 +128,4 @@ def still_need_help_component(thread_id) -> dict:
             }
         ],
     }
+
