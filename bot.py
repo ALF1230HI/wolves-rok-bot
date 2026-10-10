@@ -677,6 +677,19 @@ async def _bootstrap_ticket_session(thread):
     return ai_helper.set_session(thread.id, opener_id, history, ai_active=not other_human_spoke)
 
 
+def _is_ticket_staff(message: discord.Message) -> bool:
+    """True for anyone allowed to post in a ticket thread besides the
+    opener: admins/mods (by Discord permission, same bar as other
+    admin-only commands in this bot) or the designated human ticket
+    helper. Everyone else gets their messages removed from ticket
+    threads so the conversation stays just between the opener and the AI
+    (and staff when they step in)."""
+    if message.author.id == ai_helper.HUMAN_HELPER_USER_ID:
+        return True
+    perms = getattr(message.author, "guild_permissions", None)
+    return bool(perms and (perms.administrator or perms.manage_messages))
+
+
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
@@ -694,17 +707,36 @@ async def on_message(message: discord.Message):
         if session is None:
             return
 
+    if message.author.id != session.get("opener_id"):
+        if _is_ticket_staff(message):
+            # A human helper/admin stepped in -- stop the AI from talking
+            # over them, but let their message stand.
+            ai_helper.pause_session(thread.id)
+            return
+        # Someone who isn't the ticket opener or staff -- this ticket
+        # thread is just between the opener and the AI/staff, so remove
+        # their message and let them know instead of letting it clutter
+        # (or confuse) the conversation.
+        try:
+            await message.delete()
+        except Exception as e:
+            print(f"[ticket] couldn't delete off-limits message in thread {thread.id}: {e!r}")
+        try:
+            opener_mention = f"<@{session.get('opener_id')}>"
+            await thread.send(
+                f"🔒 Only {opener_mention} can post in this ticket. "
+                f"Need help too? Open your own with `/ticket`.",
+                delete_after=8,
+            )
+        except Exception as e:
+            print(f"[ticket] couldn't post lock notice in thread {thread.id}: {e!r}")
+        return
+
     if not session.get("ai_active", False):
         return
 
-    if message.author.id != session.get("opener_id"):
-        # Someone other than the ticket opener joined the conversation --
-        # treat them as the human helper and stop the AI from talking over
-        # them.
-        ai_helper.pause_session(thread.id)
-        return
-
     issue_text = (message.content or "").strip()
+
 
     raw_images = []
     for attachment in message.attachments:
