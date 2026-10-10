@@ -49,6 +49,18 @@ TICKET_SESSIONS: dict = {}
 # an absolute sane ceiling on latency/bandwidth for an extreme edge case.
 MAX_HISTORY_TURNS = 60
 
+# Before emitting its actual JSON reply, this model can spend a variable,
+# invisible number of tokens "thinking" (reported separately as
+# thoughtsTokenCount) -- even with thinkingLevel set to "low". If
+# maxOutputTokens is too tight, thinking alone can eat the whole budget and
+# cut the real reply off mid-sentence (finishReason "MAX_TOKENS"), which
+# then fails JSON parsing and falls back to the generic "couldn't help"
+# response -- incorrectly marking a perfectly good reply as not confident
+# and escalating to a human for no reason. Budget generously so this can't
+# happen; a short 3-6 sentence reply plus JSON wrapping is well under 1000
+# tokens, so this still leaves a large safety margin either way.
+MAX_OUTPUT_TOKENS = 2048
+
 # Only images from the CURRENT message are ever sent to Gemini -- older
 # images already discussed are represented in history as a short text note
 # instead of being re-uploaded every single turn (keeps requests small and
@@ -133,14 +145,18 @@ FALLBACK_RESULT = {
 }
 
 
-async def _generate(contents: list) -> dict:
+async def _generate(contents: list, _is_retry: bool = False) -> dict:
     """Shared Gemini call. `contents` is a list of {"role", "parts"} turns,
     already in Gemini's wire format. Returns {"reply": str, "confident": bool},
-    failing safe to FALLBACK_RESULT on any problem."""
+    failing safe to FALLBACK_RESULT on any problem. If the response comes
+    back truncated (see MAX_OUTPUT_TOKENS comment above), this retries once
+    with double the token budget before giving up -- callers should never
+    pass `_is_retry` themselves, it's for that one internal retry call."""
     if not GEMINI_API_KEY:
         print("[ai_helper] no GEMINI_API_KEY set, skipping AI response")
         return dict(FALLBACK_RESULT)
 
+    max_tokens = MAX_OUTPUT_TOKENS * 2 if _is_retry else MAX_OUTPUT_TOKENS
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -148,7 +164,7 @@ async def _generate(contents: list) -> dict:
         "generationConfig": {
             "responseMimeType": "application/json",
             "responseSchema": RESPONSE_SCHEMA,
-            "maxOutputTokens": 300,
+            "maxOutputTokens": max_tokens,
             "temperature": 0.4,
             # Keep latency down: this is a short classification + reply task,
             # not something that benefits from extended "thinking" tokens.
@@ -163,8 +179,24 @@ async def _generate(contents: list) -> dict:
                     print(f"[ai_helper] Gemini request failed ({resp.status}): {text}")
                     return dict(FALLBACK_RESULT)
                 data = await resp.json()
-        content = data["candidates"][0]["content"]["parts"][0]["text"]
-        parsed = json.loads(content)
+        candidates = data.get("candidates") or []
+        finish_reason = candidates[0].get("finishReason") if candidates else None
+        content = candidates[0]["content"]["parts"][0]["text"] if candidates else ""
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if parsed is None and not _is_retry:
+            # Most likely the model's internal "thinking" ate most/all of
+            # the token budget before it could emit (or finish emitting)
+            # the JSON reply (finishReason "MAX_TOKENS", content missing or
+            # cut off mid-sentence). Retry once with more headroom instead
+            # of immediately failing the member over to a human for what's
+            # really just a budget hiccup.
+            print(f"[ai_helper] unparseable/truncated response (finishReason={finish_reason!r}, content={content!r}), retrying with bigger budget")
+            return await _generate(contents, _is_retry=True)
+        if parsed is None:
+            return dict(FALLBACK_RESULT)
         reply = str(parsed.get("reply", "")).strip()
         confident = bool(parsed.get("confident", False))
         if not reply:
