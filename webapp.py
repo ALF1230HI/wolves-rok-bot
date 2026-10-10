@@ -459,6 +459,7 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
         # own gateway connection (matched purely by custom_id), so it works
         # the same whether the ticket was opened here or in Discord.
         ai_result = await ai_helper.get_ai_response(issue)
+        ai_helper.start_session(thread_id, user_id, issue, ai_result["reply"])
         ai_embed = {
             "title": "🤖 Automated Suggestion",
             "description": ai_result["reply"],

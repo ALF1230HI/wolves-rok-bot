@@ -263,6 +263,10 @@ async def handle_escalate_button(interaction: discord.Interaction):
         await interaction.response.edit_message(view=None)
     except Exception as e:
         print(f"[ticket] failed to clear escalate button: {e!r}")
+    # Stop the AI from auto-replying in this thread now that a human's been
+    # explicitly asked to step in.
+    if interaction.channel is not None:
+        ai_helper.pause_session(interaction.channel.id)
     try:
         await interaction.channel.send(
             f"{ai_helper.escalate_mention()} — {interaction.user.mention} still needs help "
@@ -576,17 +580,20 @@ async def ticket(interaction: discord.Interaction, issue: str):
         await interaction.followup.send(f"⚠️ Failed to open a ticket: {e}", ephemeral=True)
         return
 
-    await post_ai_ticket_response(thread, issue)
+    await post_ai_ticket_response(thread, issue, interaction.user.id)
 
     await interaction.followup.send(f"🎫 Ticket created: {thread.mention}", ephemeral=True)
 
 
-async def post_ai_ticket_response(thread, issue: str):
+async def post_ai_ticket_response(thread, issue: str, opener_id: int):
     """Post an AI-generated first response in a freshly-created ticket
     thread/forum post, and immediately loop in the human helper if the AI
     isn't confident it solved things. Shared by /ticket and the website's
-    'Get Help' flow (via webapp.py's own REST equivalent of this)."""
+    'Get Help' flow (via webapp.py's own REST equivalent of this). Also
+    starts the shared conversation-tracking session so follow-up messages
+    from the ticket opener keep getting AI replies (see on_message)."""
     ai_result = await ai_helper.get_ai_response(issue)
+    ai_helper.start_session(thread.id, opener_id, issue, ai_result["reply"])
 
     ai_embed = discord.Embed(
         title="🤖 Automated Suggestion",
@@ -595,6 +602,113 @@ async def post_ai_ticket_response(thread, issue: str):
     )
 
     if ai_result["confident"]:
+        ai_embed.set_footer(text="Didn't fix it? Click below to bring in a human.")
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label="🙋 Still need help?",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"escalate_ticket:{thread.id}",
+            )
+        )
+        await thread.send(embed=ai_embed, view=view)
+    else:
+        ai_embed.set_footer(text="Looping in a human for this one.")
+        await thread.send(embed=ai_embed)
+        await thread.send(
+            f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
+        )
+
+
+async def _bootstrap_ticket_session(thread):
+    """Best-effort reconstruction of a ticket's conversation state from the
+    thread's own message history, for ticket threads this process doesn't
+    have in-memory state for yet (e.g. right after a restart). Returns the
+    rebuilt session dict, or None if this doesn't look like a ticket thread
+    we can make sense of."""
+    try:
+        opener_id = None
+        history = []
+        other_human_spoke = False
+        async for m in thread.history(limit=50, oldest_first=True):
+            if m.author.id == bot.user.id:
+                for e in m.embeds:
+                    label = (e.author.name if e.author else None) or e.title or ""
+                    if "New Support Ticket" in label:
+                        for f in e.fields:
+                            if f.name == "Opened by" and f.value:
+                                ids = re.findall(r"\d+", f.value)
+                                if ids:
+                                    opener_id = int(ids[0])
+                        if e.description:
+                            history.append(("user", e.description))
+                    elif "Automated Suggestion" in label and e.description:
+                        history.append(("model", e.description))
+            elif not m.author.bot:
+                if opener_id is None:
+                    opener_id = m.author.id
+                if m.author.id == opener_id:
+                    if m.content:
+                        history.append(("user", m.content))
+                else:
+                    other_human_spoke = True
+    except Exception as e:
+        print(f"[ticket] couldn't bootstrap session for thread {thread.id}: {e!r}")
+        return None
+
+    if opener_id is None:
+        return None
+    return ai_helper.set_session(thread.id, opener_id, history, ai_active=not other_human_spoke)
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    await bot.process_commands(message)
+
+    if message.author.bot or not isinstance(message.channel, discord.Thread):
+        return
+
+    thread = message.channel
+    session = ai_helper.get_session(thread.id)
+
+    if session is None:
+        if not thread.name.startswith("ticket-"):
+            return
+        session = await _bootstrap_ticket_session(thread)
+        if session is None:
+            return
+
+    if not session.get("ai_active", False):
+        return
+
+    if message.author.id != session.get("opener_id"):
+        # Someone other than the ticket opener joined the conversation --
+        # treat them as the human helper and stop the AI from talking over
+        # them.
+        ai_helper.pause_session(thread.id)
+        return
+
+    issue_text = (message.content or "").strip()
+    if not issue_text:
+        return
+
+    ai_helper.append_turn(thread.id, "user", issue_text)
+    try:
+        async with thread.typing():
+            result = await ai_helper.get_ai_followup(session["history"])
+    except Exception as e:
+        print(f"[ticket] follow-up AI call failed for thread {thread.id}: {e!r}")
+        return
+
+    ai_helper.append_turn(thread.id, "model", result["reply"])
+
+    ai_embed = discord.Embed(
+        title="🤖 Automated Suggestion",
+        description=result["reply"],
+        color=RED,
+    )
+
+    if result["confident"]:
         ai_embed.set_footer(text="Didn't fix it? Click below to bring in a human.")
         view = discord.ui.View(timeout=None)
         view.add_item(
