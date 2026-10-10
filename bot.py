@@ -31,6 +31,7 @@ import sheets
 import server_config
 import donate_token
 import webapp
+import ai_helper
 
 load_dotenv()
 
@@ -246,6 +247,29 @@ async def on_interaction(interaction: discord.Interaction):
         name = interaction.data.get("name") if interaction.data else "?"
         age = time.time() - interaction.created_at.timestamp()
         print(f"[interaction] {time.strftime('%H:%M:%S')} /{name} received (age={age:.2f}s) from {interaction.user}")
+    elif interaction.type == discord.InteractionType.component:
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if custom_id.startswith("escalate_ticket:"):
+            await handle_escalate_button(interaction)
+
+
+async def handle_escalate_button(interaction: discord.Interaction):
+    """Handles clicks on the 'Still need help?' button attached to an AI
+    ticket response. Matches purely on the custom_id string (no registered
+    View needed), so it keeps working even across bot restarts, and
+    regardless of whether the message was sent by this process's
+    discord.py Client or posted via the website's raw REST calls."""
+    try:
+        await interaction.response.edit_message(view=None)
+    except Exception as e:
+        print(f"[ticket] failed to clear escalate button: {e!r}")
+    try:
+        await interaction.channel.send(
+            f"{ai_helper.escalate_mention()} — {interaction.user.mention} still needs help "
+            f"with this ticket, please take a look! 🙏"
+        )
+    except Exception as e:
+        print(f"[ticket] failed to escalate after button click: {e!r}")
 
 
 @bot.event
@@ -552,7 +576,41 @@ async def ticket(interaction: discord.Interaction, issue: str):
         await interaction.followup.send(f"⚠️ Failed to open a ticket: {e}", ephemeral=True)
         return
 
+    await post_ai_ticket_response(thread, issue)
+
     await interaction.followup.send(f"🎫 Ticket created: {thread.mention}", ephemeral=True)
+
+
+async def post_ai_ticket_response(thread, issue: str):
+    """Post an AI-generated first response in a freshly-created ticket
+    thread/forum post, and immediately loop in the human helper if the AI
+    isn't confident it solved things. Shared by /ticket and the website's
+    'Get Help' flow (via webapp.py's own REST equivalent of this)."""
+    ai_result = await ai_helper.get_ai_response(issue)
+
+    ai_embed = discord.Embed(
+        title="🤖 Automated Suggestion",
+        description=ai_result["reply"],
+        color=RED,
+    )
+
+    if ai_result["confident"]:
+        ai_embed.set_footer(text="Didn't fix it? Click below to bring in a human.")
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label="🙋 Still need help?",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"escalate_ticket:{thread.id}",
+            )
+        )
+        await thread.send(embed=ai_embed, view=view)
+    else:
+        ai_embed.set_footer(text="Looping in a human for this one.")
+        await thread.send(embed=ai_embed)
+        await thread.send(
+            f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
+        )
 
 
 

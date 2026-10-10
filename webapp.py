@@ -34,6 +34,7 @@ from aiohttp import web, ClientSession, FormData
 import donate_token
 import sheets
 import server_config
+import ai_helper
 
 RED_HEX = "#FF0000"
 
@@ -391,6 +392,44 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
                 if resp.status >= 300:
                     text = await resp.text()
                     print(f"[webapp] posting ticket message failed ({resp.status}): {text}")
+
+        # Same AI-first-response behavior as the in-Discord /ticket command:
+        # try to help automatically, and if not confident, loop the human in
+        # immediately. The "Still need help?" button is handled by the bot's
+        # own gateway connection (matched purely by custom_id), so it works
+        # the same whether the ticket was opened here or in Discord.
+        ai_result = await ai_helper.get_ai_response(issue)
+        ai_embed = {
+            "title": "🤖 Automated Suggestion",
+            "description": ai_result["reply"],
+            "color": 0xFF0000,
+        }
+        if ai_result["confident"]:
+            ai_embed["footer"] = {"text": "Didn't fix it? Click below to bring in a human."}
+            ai_body = {
+                "embeds": [ai_embed],
+                "components": [ai_helper.still_need_help_component(thread_id)],
+            }
+        else:
+            ai_embed["footer"] = {"text": "Looping in a human for this one."}
+            ai_body = {"embeds": [ai_embed]}
+
+        async with session.post(
+            f"{DISCORD_API}/channels/{thread_id}/messages", json=ai_body, headers=headers
+        ) as resp:
+            if resp.status >= 300:
+                text = await resp.text()
+                print(f"[webapp] posting AI ticket response failed ({resp.status}): {text}")
+
+        if not ai_result["confident"]:
+            async with session.post(
+                f"{DISCORD_API}/channels/{thread_id}/messages",
+                json={"content": f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"},
+                headers=headers,
+            ) as resp:
+                if resp.status >= 300:
+                    text = await resp.text()
+                    print(f"[webapp] posting ticket escalation ping failed ({resp.status}): {text}")
 
     return True
 
