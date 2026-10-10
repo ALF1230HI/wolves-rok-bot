@@ -54,20 +54,32 @@ PAGE_SHELL = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0505">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>{title}</title>
 <style>
   :root {{ color-scheme: dark; }}
-  * {{ box-sizing: border-box; }}
+  * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
+  html {{ -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }}
   body {{
     margin: 0; padding: 0;
     background: radial-gradient(circle at top, #1b0e0e 0%, #0b0505 60%, #050202 100%);
     color: #f1e9e9;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     min-height: 100vh;
+    min-height: 100dvh;
     display: flex; justify-content: center;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
   }}
-  .wrap {{ width: 100%; max-width: 560px; padding: 28px 20px 60px; }}
+  .wrap {{
+    width: 100%; max-width: 560px;
+    padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }}
   .banner {{
     background: #3a1d00; border: 1px solid #ffb020; color: #ffd98a;
     padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 18px;
@@ -77,45 +89,68 @@ PAGE_SHELL = """<!DOCTYPE html>
     background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
     border: 1px solid rgba(255,70,70,0.35);
     border-radius: 16px;
-    padding: 24px 22px;
+    padding: 24px 18px;
     box-shadow: 0 10px 40px rgba(255,0,0,0.08);
   }}
-  h1 {{ font-size: 22px; margin: 0 0 4px; color: #ffffff; }}
+  h1 {{ font-size: 22px; margin: 0 0 4px; color: #ffffff; line-height: 1.3; }}
   h1 .wolf {{ margin-right: 6px; }}
-  .sub {{ color: #cf9f9f; font-size: 13px; margin: 0 0 20px; }}
+  .sub {{ color: #cf9f9f; font-size: 14px; margin: 0 0 20px; line-height: 1.5; }}
   h2 {{ font-size: 15px; color: {red}; text-transform: uppercase; letter-spacing: 0.06em; margin: 26px 0 10px; }}
-  ol {{ margin: 0; padding-left: 20px; color: #eadcdc; font-size: 14px; line-height: 1.7; }}
+  ol {{ margin: 0; padding-left: 22px; color: #eadcdc; font-size: 15px; line-height: 1.75; }}
+  ol li {{ margin-bottom: 4px; }}
   ol li b {{ color: #fff; }}
-  .note {{ font-size: 12px; color: #a98484; margin-top: 14px; line-height: 1.5; }}
-  label {{ display: block; font-size: 13px; color: #e9c9c9; margin: 14px 0 6px; font-weight: 600; }}
-  input[type=number], input[type=text] {{
-    width: 100%; padding: 11px 12px; border-radius: 10px;
-    border: 1px solid rgba(255,255,255,0.15); background: #180d0d; color: #fff; font-size: 15px;
+  .note {{ font-size: 13px; color: #a98484; margin-top: 14px; line-height: 1.6; }}
+  label {{ display: block; font-size: 14px; color: #e9c9c9; margin: 14px 0 7px; font-weight: 600; }}
+  input[type=number], input[type=text], textarea {{
+    width: 100%; padding: 13px 14px; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.15); background: #180d0d; color: #fff;
+    font-size: 16px; font-family: inherit; -webkit-appearance: none; appearance: none;
+    min-height: 48px;
   }}
-  input[type=number]:focus, input[type=text]:focus {{ outline: none; border-color: {red}; }}
+  textarea {{ min-height: 110px; resize: vertical; line-height: 1.5; }}
+  input[type=number] {{ -moz-appearance: textfield; }}
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button {{ -webkit-appearance: none; margin: 0; }}
+  input:focus, textarea:focus {{ outline: none; border-color: {red}; }}
   .grid2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+  @media (max-width: 380px) {{ .grid2 {{ grid-template-columns: 1fr; }} }}
   .file-drop {{
     margin-top: 6px; border: 1.5px dashed rgba(255,255,255,0.25); border-radius: 12px;
-    padding: 18px; text-align: center; font-size: 13px; color: #cfa; color: #d8b9b9;
-    background: rgba(255,255,255,0.02); cursor: pointer;
+    padding: 20px 16px; text-align: center; font-size: 14px; color: #d8b9b9;
+    background: rgba(255,255,255,0.02); cursor: pointer; display: block;
+    min-height: 48px; touch-action: manipulation; position: relative;
   }}
-  .file-drop input {{ display: block; margin: 10px auto 0; color: #ddd; font-size: 13px; }}
+  .file-drop:active {{ background: rgba(255,255,255,0.05); }}
+  .file-drop-text {{ display: block; pointer-events: none; }}
+  .file-drop .filename {{ display: block; margin-top: 8px; font-size: 13px; color: #ff9a9a; font-weight: 600; word-break: break-all; pointer-events: none; }}
+  .file-drop input {{
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }}
   button {{
-    margin-top: 22px; width: 100%; padding: 14px; border: none; border-radius: 12px;
-    background: {red}; color: #fff; font-size: 15px; font-weight: 700; letter-spacing: 0.02em;
-    cursor: pointer;
+    margin-top: 22px; width: 100%; padding: 15px; border: none; border-radius: 12px;
+    background: {red}; color: #fff; font-size: 16px; font-weight: 700; letter-spacing: 0.02em;
+    cursor: pointer; min-height: 50px; touch-action: manipulation; -webkit-appearance: none;
   }}
-  button:hover {{ filter: brightness(1.08); }}
+  button:active {{ filter: brightness(0.9); transform: scale(0.99); }}
+  @media (hover: hover) and (pointer: fine) {{
+    button:hover {{ filter: brightness(1.08); }}
+  }}
   .footer {{ text-align: center; font-size: 11px; color: #7a5656; margin-top: 18px; }}
   .pill {{ display: inline-block; background: rgba(255,0,0,0.12); border: 1px solid rgba(255,0,0,0.3);
-    color: #ff9a9a; font-size: 12px; padding: 3px 10px; border-radius: 999px; margin-bottom: 14px; }}
+    color: #ff9a9a; font-size: 12px; padding: 4px 10px; border-radius: 999px; margin-bottom: 14px; }}
   .result {{ text-align: center; padding: 10px 0 4px; }}
   .result .big {{ font-size: 42px; margin-bottom: 8px; }}
   .amounts {{ list-style: none; padding: 0; margin: 16px 0; }}
-  .amounts li {{ display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 14px; }}
-  a.btn-link {{ display: block; text-align:center; margin-top:18px; padding: 13px; border-radius: 12px;
-    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #fff; text-decoration: none; font-size: 14px; }}
-  .error {{ color: #ff8a8a; font-size: 13px; margin-top: 10px; }}
+  .amounts li {{ display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 15px; gap: 12px; }}
+  a.btn-link {{
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    margin-top: 18px; padding: 14px; border-radius: 12px; min-height: 48px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15);
+    color: #fff; text-decoration: none; font-size: 15px; touch-action: manipulation;
+  }}
+  a.btn-link:active {{ background: rgba(255,255,255,0.1); }}
+  .error {{ color: #ff8a8a; font-size: 13px; margin-top: 10px; line-height: 1.5; }}
 </style>
 </head>
 <body>
@@ -126,6 +161,24 @@ PAGE_SHELL = """<!DOCTYPE html>
 </div>
 <div class="footer">WOLVES 🐺 | BRAVIA 3953 &bull; Alliance Bank Donations</div>
 </div>
+<script>
+  window.__wolvesFileChange = function(input) {{
+    var label = input.closest('.file-drop');
+    if (!label) return;
+    var existing = label.querySelector('.filename');
+    var name = (input.files && input.files[0]) ? input.files[0].name : '';
+    if (!name) {{
+      if (existing) existing.remove();
+      return;
+    }}
+    if (!existing) {{
+      existing = document.createElement('span');
+      existing.className = 'filename';
+      label.appendChild(existing);
+    }}
+    existing.textContent = '✅ ' + name;
+  }};
+</script>
 </body>
 </html>
 """
@@ -167,26 +220,26 @@ def render_form(payload: dict, demo: bool, token: str, error: str = None) -> str
         <div class="grid2">
           <div>
             <label>🌾 Food</label>
-            <input type="number" name="food" min="0" value="0" inputmode="numeric">
+            <input type="text" name="food" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
           </div>
           <div>
             <label>🪵 Wood</label>
-            <input type="number" name="wood" min="0" value="0" inputmode="numeric">
+            <input type="text" name="wood" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
           </div>
           <div>
             <label>🪨 Stone</label>
-            <input type="number" name="stone" min="0" value="0" inputmode="numeric">
+            <input type="text" name="stone" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
           </div>
           <div>
             <label>🪙 Gold</label>
-            <input type="number" name="gold" min="0" value="0" inputmode="numeric">
+            <input type="text" name="gold" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
           </div>
         </div>
 
         <h2>Proof screenshot</h2>
         <label class="file-drop">
-          📸 Tap to choose your Assistance Report screenshot
-          <input type="file" name="proof" accept="image/*" required>
+          <span class="file-drop-text">📸 Tap to choose your Assistance Report screenshot</span>
+          <input type="file" name="proof" accept="image/*" required onchange="window.__wolvesFileChange(this)">
         </label>
 
         {error_html}
@@ -255,8 +308,6 @@ def render_ticket_form(payload: dict, demo: bool, token: str, error: str = None)
         <input type="hidden" name="token" value="{html.escape(token)}">
         <label>What's not working?</label>
         <textarea name="issue" rows="5" required
-          style="width:100%;padding:11px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);
-          background:#180d0d;color:#fff;font-size:15px;font-family:inherit;resize:vertical;"
           placeholder="e.g. the submit button isn't doing anything, or my screenshot won't upload..."></textarea>
         {error_html}
         <button type="submit">Open Ticket</button>
