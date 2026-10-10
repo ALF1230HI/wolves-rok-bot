@@ -615,9 +615,10 @@ async def post_ai_ticket_response(thread, issue: str, opener_id: int):
     else:
         ai_embed.set_footer(text="Looping in a human for this one.")
         await thread.send(embed=ai_embed)
-        await thread.send(
-            f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
-        )
+        if ai_helper.should_ping_human(thread.id):
+            await thread.send(
+                f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
+            )
 
 
 async def _bootstrap_ticket_session(thread):
@@ -722,9 +723,10 @@ async def on_message(message: discord.Message):
     else:
         ai_embed.set_footer(text="Looping in a human for this one.")
         await thread.send(embed=ai_embed)
-        await thread.send(
-            f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
-        )
+        if ai_helper.should_ping_human(thread.id):
+            await thread.send(
+                f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
+            )
 
 
 

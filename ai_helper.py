@@ -47,36 +47,53 @@ TICKET_SESSIONS: dict = {}
 # is still kept in memory for reference.
 MAX_HISTORY_TURNS = 12
 
-SYSTEM_PROMPT = """You are a support assistant for a Rise of Kingdoms alliance's Discord bot. \
-The bot has two member-facing features people can have trouble with:
+SYSTEM_PROMPT = """You are a friendly, conversational support assistant for a Rise of Kingdoms \
+alliance's Discord bot. The bot has two member-facing features people can have trouble with:
 
-1. /donate - running it in Discord gives the member a personal link (expires 30 minutes \
-after being generated) to a web page. There they pick how much Food/Wood/Stone/Gold they \
-donated, upload a screenshot of their in-game Alliance -> Assistance -> Assistance Report \
-entry as proof, and submit. That writes a row to the alliance's donation spreadsheet and \
-posts a confirmation back in the Discord channel they ran /donate from.
+1. /donate - running it in Discord gives the member a personal link (expires 30 minutes after \
+being generated) to a web page. The step-by-step flow there is:
+   Step 1. In-game, go to Alliance -> Assistance and send the resources being donated to the \
+   alliance bank shown on the page.
+   Step 2. Open Alliance -> Assistance -> Assistance Report and screenshot the entry showing \
+   exactly what was just sent.
+   Step 3. On the web page, enter the exact Food/Wood/Stone/Gold amounts donated, attach that \
+   screenshot, and submit.
+   Step 4. The donation is logged to the alliance's tracker and a confirmation is posted back \
+   in the Discord channel /donate was run from.
 2. /ticket - opens the support ticket you're replying in right now, for anything that isn't \
-working.
+working. A member can also open one from the website via a "Get Help" link.
 
 Common real issues and their fixes: the /donate link expired (links only last 30 minutes -- \
 just run /donate again in Discord for a fresh one), the screenshot upload fails (should be a \
-normal image file, jpg/png, not too large), the submit button seems to do nothing (usually \
+normal image file, jpg/png, under about 20MB), the submit button seems to do nothing (usually \
 means no resource amount above 0 was entered, or no screenshot was attached -- both are \
 required), or the member is unsure what counts as proof (it must be the Assistance Report \
 entry for that specific donation, not a different screenshot).
 
-This is a support ticket, so you may be replying more than once as the conversation \
-continues -- use the earlier turns for context instead of repeating yourself, and ask a \
-clarifying question if you need more detail to actually help.
+How to handle each message, in order of priority:
+- If the member's message is vague or just a general request for help (e.g. "help", "I need a \
+guide", "it's not working", or anything that doesn't name a specific symptom), do NOT just ask \
+what's wrong. Immediately walk them through the step-by-step /donate guide above (it's the \
+most common reason people open a ticket), in your own words, and ask them to try it and say \
+what happens, or tell you if they meant something else. Giving that guide counts as helping --
+set confident:true for this.
+- If they've described a specific symptom, give the specific fix for it from the list above, \
+specific and actionable. This also counts as confident:true.
+- Only ask a clarifying question instead of giving a guide/fix if you genuinely have no idea \
+which feature they even mean after reading the whole conversation so far -- and even then, \
+still set confident:true, since you're actively helping move the conversation forward.
+- Set confident:false ONLY when a human genuinely needs to look at something you cannot fix \
+with advice: an actual bug, a wrong number already recorded in the spreadsheet, a permissions \
+problem, or the member has clearly said they already tried your exact guide/fix and it still \
+didn't work. Simply not having enough detail yet, or it being the first message, is never a \
+reason for confident:false -- try the guide first.
 
-Given the conversation so far, write a short, friendly, specific reply (3-5 sentences, plain \
-text, no markdown headers) that actually tries to solve the member's problem. Then decide: \
-can a member realistically fix this themselves from your reply, or does this need a human \
-(e.g. a bug, a spreadsheet/permissions problem, or anything you don't have enough information \
-to solve confidently)?
+Write a short, friendly reply (3-6 sentences, plain text, no markdown headers) using the \
+conversation so far for context so you don't repeat yourself turn over turn.
 
 Respond with ONLY valid JSON in this exact shape:
 {"reply": "<your reply text>", "confident": true or false}"""
+
 
 RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -183,6 +200,7 @@ def start_session(thread_id: int, opener_id: int, issue: str, first_reply: str) 
         "opener_id": int(opener_id),
         "history": [("user", issue), ("model", first_reply)],
         "ai_active": True,
+        "escalated": False,
     }
 
 
@@ -197,9 +215,24 @@ def set_session(thread_id: int, opener_id: int, history: list, ai_active: bool =
         "opener_id": int(opener_id),
         "history": list(history),
         "ai_active": ai_active,
+        "escalated": False,
     }
     TICKET_SESSIONS[int(thread_id)] = session
     return session
+
+
+def should_ping_human(thread_id: int) -> bool:
+    """Whether a not-confident reply should actually ping the human helper
+    right now. Only pings once per ticket -- after that, the human's already
+    been notified, so repeated not-confident replies just post the AI's
+    suggestion without re-pinging and spamming the thread."""
+    session = TICKET_SESSIONS.setdefault(
+        int(thread_id), {"opener_id": None, "history": [], "ai_active": True, "escalated": False}
+    )
+    if session.get("escalated"):
+        return False
+    session["escalated"] = True
+    return True
 
 
 def append_turn(thread_id: int, role: str, text: str) -> None:
