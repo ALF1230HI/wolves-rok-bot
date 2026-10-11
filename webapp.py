@@ -27,7 +27,9 @@ Run it with:  python webapp.py
 
 import os
 import html
+import json
 import asyncio
+from datetime import datetime, timezone as dt_timezone
 
 from aiohttp import web, ClientSession, FormData
 
@@ -37,6 +39,15 @@ import server_config
 import ai_helper
 
 RED_HEX = "#FF0000"
+WEEKLY_MINIMUM_PER_RESOURCE = 10_000_000
+
+# Tiny inline wolf-head favicon -- a data: URI so it works even inside the
+# sandboxed, network-less preview iframe (no external file request needed).
+FAVICON_DATA_URI = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E"
+    "%3Crect width='100' height='100' rx='20' fill='%230b0505'/%3E"
+    "%3Ctext x='50' y='68' font-size='58' text-anchor='middle'%3E%F0%9F%90%BA%3C/text%3E%3C/svg%3E"
+)
 
 # Proof-screenshot uploads can legitimately be a few MB on modern phones
 # (especially PNG screenshots, which aren't as compressed as JPEGs), so the
@@ -69,8 +80,30 @@ PAGE_SHELL = """<!DOCTYPE html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="{favicon}">
+<meta name="description" content="{description}">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{description}">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{title}">
+<meta name="twitter:description" content="{description}">
 <title>{title}</title>
 <style>
+  @keyframes wolvesFadeUp {{
+    from {{ opacity: 0; transform: translateY(10px); }}
+    to {{ opacity: 1; transform: translateY(0); }}
+  }}
+  @keyframes wolvesPop {{
+    0% {{ transform: scale(0.6); opacity: 0; }}
+    60% {{ transform: scale(1.08); opacity: 1; }}
+    100% {{ transform: scale(1); }}
+  }}
+  @keyframes wolvesSpin {{ to {{ transform: rotate(360deg); }} }}
+  @keyframes wolvesShimmer {{
+    0% {{ background-position: -200px 0; }}
+    100% {{ background-position: calc(200px + 100%) 0; }}
+  }}
   :root {{ color-scheme: dark; }}
   * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
   html {{ -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }}
@@ -100,7 +133,16 @@ PAGE_SHELL = """<!DOCTYPE html>
     border-radius: 16px;
     padding: 24px 18px;
     box-shadow: 0 10px 40px rgba(255,0,0,0.08);
+    animation: wolvesFadeUp 0.45s ease both;
   }}
+  .stats-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }}
+  @media (max-width: 380px) {{ .stats-row {{ grid-template-columns: 1fr; }} }}
+  .stat-box {{
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px; padding: 12px 14px; text-align: center;
+  }}
+  .stat-box .stat-value {{ font-size: 18px; font-weight: 800; color: #fff; line-height: 1.2; }}
+  .stat-box .stat-label {{ font-size: 11px; color: #cf9f9f; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 3px; }}
   h1 {{ font-size: 22px; margin: 0 0 4px; color: #ffffff; line-height: 1.3; }}
   h1 .wolf {{ margin-right: 6px; }}
   .sub {{ color: #cf9f9f; font-size: 14px; margin: 0 0 20px; line-height: 1.5; }}
@@ -123,15 +165,38 @@ PAGE_SHELL = """<!DOCTYPE html>
   input:focus, textarea:focus {{ outline: none; border-color: {red}; }}
   .grid2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
   @media (max-width: 380px) {{ .grid2 {{ grid-template-columns: 1fr; }} }}
+  .field-block {{ position: relative; }}
+  .chip-row {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }}
+  .chip {{
+    appearance: none; -webkit-appearance: none; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.05); color: #e9c9c9; font-size: 11.5px; font-weight: 700;
+    padding: 5px 10px; border-radius: 999px; cursor: pointer; touch-action: manipulation;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }}
+  .chip:active {{ transform: scale(0.96); }}
+  .chip.active, .chip:active {{ background: {red}; border-color: {red}; color: #fff; }}
+  .total-row {{
+    display: flex; justify-content: space-between; align-items: center; margin-top: 16px;
+    padding: 12px 14px; border-radius: 12px; background: rgba(255,0,0,0.08);
+    border: 1px solid rgba(255,0,0,0.25); font-size: 14px; color: #ffd0d0;
+  }}
+  .total-row .total-value {{ font-size: 17px; font-weight: 800; color: #fff; }}
   .file-drop {{
     margin-top: 6px; border: 1.5px dashed rgba(255,255,255,0.25); border-radius: 12px;
     padding: 20px 16px; text-align: center; font-size: 14px; color: #d8b9b9;
     background: rgba(255,255,255,0.02); cursor: pointer; display: block;
     min-height: 48px; touch-action: manipulation; position: relative;
+    transition: border-color 0.15s, background 0.15s;
   }}
   .file-drop:active {{ background: rgba(255,255,255,0.05); }}
+  .file-drop.drag-over {{ border-color: {red}; background: rgba(255,0,0,0.06); }}
+  .file-drop.has-file {{ border-style: solid; border-color: rgba(60,220,130,0.5); }}
   .file-drop-text {{ display: block; pointer-events: none; }}
   .file-drop .filename {{ display: block; margin-top: 8px; font-size: 13px; color: #ff9a9a; font-weight: 600; word-break: break-all; pointer-events: none; }}
+  .file-drop .preview-thumb {{
+    display: block; max-width: 100%; max-height: 160px; margin: 10px auto 0; border-radius: 8px;
+    pointer-events: none; animation: wolvesPop 0.3s ease both;
+  }}
   .file-drop input {{
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
@@ -140,29 +205,52 @@ PAGE_SHELL = """<!DOCTYPE html>
     margin-top: 22px; width: 100%; padding: 15px; border: none; border-radius: 12px;
     background: {red}; color: #fff; font-size: 16px; font-weight: 700; letter-spacing: 0.02em;
     cursor: pointer; min-height: 50px; touch-action: manipulation; -webkit-appearance: none;
+    transition: filter 0.15s, transform 0.1s, opacity 0.15s;
+    display: flex; align-items: center; justify-content: center; gap: 9px;
   }}
   button:active {{ filter: brightness(0.9); transform: scale(0.99); }}
+  button:disabled {{ opacity: 0.75; cursor: default; }}
   @media (hover: hover) and (pointer: fine) {{
-    button:hover {{ filter: brightness(1.08); }}
+    button:hover:not(:disabled) {{ filter: brightness(1.08); }}
   }}
+  .spinner {{
+    display: none; width: 17px; height: 17px; border-radius: 50%;
+    border: 2.5px solid rgba(255,255,255,0.35); border-top-color: #fff;
+    animation: wolvesSpin 0.7s linear infinite; flex-shrink: 0;
+  }}
+  button.loading .spinner {{ display: inline-block; }}
   .footer {{ text-align: center; font-size: 11px; color: #7a5656; margin-top: 18px; }}
   .pill {{ display: inline-block; background: rgba(255,0,0,0.12); border: 1px solid rgba(255,0,0,0.3);
     color: #ff9a9a; font-size: 12px; padding: 4px 10px; border-radius: 999px; margin-bottom: 14px; }}
   .result {{ text-align: center; padding: 10px 0 4px; }}
-  .result .big {{ font-size: 42px; margin-bottom: 8px; }}
+  .result .big {{ font-size: 42px; margin-bottom: 8px; animation: wolvesPop 0.5s ease both; }}
   .amounts {{ list-style: none; padding: 0; margin: 16px 0; }}
   .amounts li {{ display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 15px; gap: 12px; }}
+  .progress-block {{ margin: 18px 0 6px; }}
+  .progress-block h2 {{ margin-top: 0; }}
+  .progress-item {{ margin-bottom: 14px; }}
+  .progress-item .progress-top {{ display: flex; justify-content: space-between; font-size: 13px; color: #e9c9c9; margin-bottom: 6px; }}
+  .progress-item .progress-top .done {{ color: #7be37b; font-weight: 700; }}
+  .progress-track {{ height: 10px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; }}
+  .progress-fill {{
+    height: 100%; border-radius: 999px; background: linear-gradient(90deg, {red}, #ff8a4c);
+    transition: width 0.8s cubic-bezier(.22,1,.36,1); width: 0%;
+  }}
+  .progress-fill.complete {{ background: linear-gradient(90deg, #2ecf6f, #7be37b); }}
   a.btn-link {{
     display: flex; align-items: center; justify-content: center; text-align: center;
     margin-top: 18px; padding: 14px; border-radius: 12px; min-height: 48px;
     background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15);
     color: #fff; text-decoration: none; font-size: 15px; touch-action: manipulation;
+    transition: background 0.15s;
   }}
   a.btn-link:active {{ background: rgba(255,255,255,0.1); }}
-  .error {{ color: #ff8a8a; font-size: 13px; margin-top: 10px; line-height: 1.5; }}
+  .error {{ color: #ff8a8a; font-size: 13px; margin-top: 10px; line-height: 1.5; animation: wolvesFadeUp 0.25s ease both; }}
+  #confetti-canvas {{ position: fixed; inset: 0; pointer-events: none; z-index: 999; }}
 </style>
 </head>
 <body>
+<canvas id="confetti-canvas"></canvas>
 <div class="wrap">
 {banner}
 <div class="card">
@@ -171,21 +259,172 @@ PAGE_SHELL = """<!DOCTYPE html>
 <div class="footer">WOLVES 🐺 | BRAVIA 3953 &bull; Alliance Bank Donations</div>
 </div>
 <script>
+  var WOLVES_MAX_UPLOAD_BYTES = {max_upload_bytes};
+
   window.__wolvesFileChange = function(input) {{
     var label = input.closest('.file-drop');
     if (!label) return;
     var existing = label.querySelector('.filename');
-    var name = (input.files && input.files[0]) ? input.files[0].name : '';
-    if (!name) {{
+    var thumb = label.querySelector('.preview-thumb');
+    var errEl = label.parentElement.querySelector('.client-file-error');
+    var file = (input.files && input.files[0]) ? input.files[0] : null;
+
+    if (errEl) errEl.remove();
+    if (!file) {{
       if (existing) existing.remove();
+      if (thumb) thumb.remove();
+      label.classList.remove('has-file');
       return;
     }}
+
+    if (file.size > WOLVES_MAX_UPLOAD_BYTES) {{
+      input.value = '';
+      if (existing) existing.remove();
+      if (thumb) thumb.remove();
+      label.classList.remove('has-file');
+      var msg = document.createElement('div');
+      msg.className = 'error client-file-error';
+      msg.textContent = '⚠️ That file is too large — please pick one under ' +
+        Math.round(WOLVES_MAX_UPLOAD_BYTES / (1024*1024)) + 'MB.';
+      label.insertAdjacentElement('afterend', msg);
+      return;
+    }}
+
+    label.classList.add('has-file');
     if (!existing) {{
       existing = document.createElement('span');
       existing.className = 'filename';
       label.appendChild(existing);
     }}
-    existing.textContent = '✅ ' + name;
+    existing.textContent = '✅ ' + file.name;
+
+    if (file.type && file.type.indexOf('image/') === 0 && window.FileReader) {{
+      var reader = new FileReader();
+      reader.onload = function(e) {{
+        if (!thumb) {{
+          thumb = document.createElement('img');
+          thumb.className = 'preview-thumb';
+          label.appendChild(thumb);
+        }}
+        thumb.src = e.target.result;
+      }};
+      reader.readAsDataURL(file);
+    }}
+  }};
+
+  // Drag-and-drop support on top of the existing tap-to-choose file inputs.
+  document.querySelectorAll('.file-drop').forEach(function(label) {{
+    var input = label.querySelector('input[type=file]');
+    if (!input) return;
+    ['dragenter', 'dragover'].forEach(function(evt) {{
+      label.addEventListener(evt, function(e) {{
+        e.preventDefault(); e.stopPropagation();
+        label.classList.add('drag-over');
+      }});
+    }});
+    ['dragleave', 'drop'].forEach(function(evt) {{
+      label.addEventListener(evt, function(e) {{
+        e.preventDefault(); e.stopPropagation();
+        label.classList.remove('drag-over');
+      }});
+    }});
+    label.addEventListener('drop', function(e) {{
+      var files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) {{
+        input.files = files;
+        window.__wolvesFileChange(input);
+      }}
+    }});
+  }});
+
+  // Quick-pick amount chips: click to fill (or clear) a resource field.
+  window.__wolvesChip = function(btn, inputName, value) {{
+    var input = document.querySelector('input[name="' + inputName + '"]');
+    if (!input) return;
+    var row = btn.closest('.chip-row');
+    var already = btn.classList.contains('active');
+    if (row) row.querySelectorAll('.chip').forEach(function(c) {{ c.classList.remove('active'); }});
+    input.value = already ? '0' : String(value);
+    if (!already) btn.classList.add('active');
+    window.__wolvesUpdateTotal && window.__wolvesUpdateTotal();
+  }};
+
+  // Live running total under the amounts grid.
+  window.__wolvesUpdateTotal = function() {{
+    var el = document.getElementById('wolves-total-value');
+    if (!el) return;
+    var sum = 0;
+    ['food', 'wood', 'stone', 'gold'].forEach(function(n) {{
+      var input = document.querySelector('input[name="' + n + '"]');
+      if (input) {{
+        var v = parseInt((input.value || '0').replace(/[^0-9]/g, ''), 10);
+        if (!isNaN(v)) sum += v;
+      }}
+    }});
+    el.textContent = sum.toLocaleString('en-US');
+  }};
+  document.querySelectorAll('input[name=food], input[name=wood], input[name=stone], input[name=gold]')
+    .forEach(function(input) {{
+      input.addEventListener('input', function() {{
+        var row = input.closest('.field-block');
+        if (row) row.querySelectorAll('.chip').forEach(function(c) {{ c.classList.remove('active'); }});
+        window.__wolvesUpdateTotal();
+      }});
+    }});
+  window.__wolvesUpdateTotal();
+
+  // Loading state on submit so a slow upload can't be double-submitted.
+  document.querySelectorAll('form').forEach(function(form) {{
+    form.addEventListener('submit', function() {{
+      var btn = form.querySelector('button[type=submit]');
+      if (!btn || btn.classList.contains('loading')) return;
+      btn.classList.add('loading');
+      btn.disabled = true;
+      var label = btn.querySelector('.btn-label');
+      if (label) label.textContent = 'Submitting…';
+    }});
+  }});
+
+  // Lightweight canvas confetti burst -- no external library, just a
+  // couple hundred particles falling under gravity for ~2.5s. Triggered
+  // from the success page only (see render_success).
+  window.__wolvesConfetti = function() {{
+    var canvas = document.getElementById('confetti-canvas');
+    if (!canvas || !canvas.getContext) return;
+    var ctx = canvas.getContext('2d');
+    var W = canvas.width = window.innerWidth;
+    var H = canvas.height = window.innerHeight;
+    var colors = ['#ff3b3b', '#ff8a4c', '#ffd166', '#f1e9e9', '#ff6b6b'];
+    var pieces = [];
+    for (var i = 0; i < 140; i++) {{
+      pieces.push({{
+        x: Math.random() * W, y: -20 - Math.random() * H * 0.5,
+        w: 6 + Math.random() * 6, h: 8 + Math.random() * 10,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        rot: Math.random() * Math.PI, vRot: (Math.random() - 0.5) * 0.3,
+        vy: 2 + Math.random() * 3, vx: (Math.random() - 0.5) * 2.5,
+      }});
+    }}
+    var start = Date.now();
+    function frame() {{
+      var elapsed = Date.now() - start;
+      ctx.clearRect(0, 0, W, H);
+      pieces.forEach(function(p) {{
+        p.x += p.vx; p.y += p.vy; p.rot += p.vRot;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }});
+      if (elapsed < 2600) {{
+        requestAnimationFrame(frame);
+      }} else {{
+        ctx.clearRect(0, 0, W, H);
+      }}
+    }}
+    requestAnimationFrame(frame);
   }};
 </script>
 </body>
@@ -193,25 +432,83 @@ PAGE_SHELL = """<!DOCTYPE html>
 """
 
 
-def render_page(title: str, body: str, demo: bool) -> str:
+def render_page(title: str, body: str, demo: bool, description: str = None) -> str:
     banner = (
         '<div class="banner">🧪 TEST MODE — nothing on this page writes to the real '
         "spreadsheet or posts to Discord. Safe to click around.</div>"
         if demo
         else ""
     )
-    return PAGE_SHELL.format(title=html.escape(title), body=body, banner=banner, red=RED_HEX)
+    return PAGE_SHELL.format(
+        title=html.escape(title),
+        body=body,
+        banner=banner,
+        red=RED_HEX,
+        favicon=FAVICON_DATA_URI,
+        description=html.escape(description or "Log your WOLVES alliance bank donation in a few taps."),
+        max_upload_bytes=MAX_UPLOAD_BYTES,
+    )
 
 
-def render_form(payload: dict, demo: bool, token: str, error: str = None) -> str:
+def submit_button(label: str) -> str:
+    return (
+        f'<button type="submit"><span class="spinner"></span>'
+        f'<span class="btn-label">{html.escape(label)}</span></button>'
+    )
+
+
+def render_stats_row(days_left: int, compliant: int, total_members: int) -> str:
+    if days_left is None:
+        return ""
+    countdown_value = "Today! 🔁" if days_left == 0 else f"{days_left} day{'s' if days_left != 1 else ''}"
+    compliance_value = f"{compliant}/{total_members}" if total_members else "—"
+    return f"""
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-value">⏳ {countdown_value}</div>
+          <div class="stat-label">Until Weekly Reset</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value">🧮 {compliance_value}</div>
+          <div class="stat-label">Members Hit Minimum</div>
+        </div>
+      </div>
+    """
+
+
+def _amount_field(label: str, name: str, emoji_chips: list) -> str:
+    chips = "".join(
+        f'<button type="button" class="chip" onclick="window.__wolvesChip(this, \'{name}\', {value})">{text}</button>'
+        for text, value in emoji_chips
+    )
+    return f"""
+          <div class="field-block">
+            <label>{label}</label>
+            <input type="text" name="{name}" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+            <div class="chip-row">{chips}</div>
+          </div>
+    """
+
+
+def render_form(
+    payload: dict,
+    demo: bool,
+    token: str,
+    error: str = None,
+    days_left: int = None,
+    compliant: int = None,
+    total_members: int = None,
+) -> str:
     display_name = html.escape(payload.get("n", "Donor"))
     bank_name = html.escape(payload.get("bank", "the alliance bank"))
     error_html = f'<div class="error">⚠️ {html.escape(error)}</div>' if error else ""
+    stats_html = render_stats_row(days_left, compliant, total_members)
+    quick_amounts = [("10M", 10_000_000), ("25M", 25_000_000), ("50M", 50_000_000)]
     body = f"""
       <span class="pill">Donating as {display_name}</span>
       <h1><span class="wolf">🐺</span>Alliance Bank Donation</h1>
       <p class="sub">Follow the steps below, then log exactly what you sent.</p>
-
+      {stats_html}
       <h2>How it works</h2>
       <ol>
         <li>In-game, go to <b>Alliance &rarr; Assistance</b> and send the resources
@@ -226,43 +523,68 @@ def render_form(payload: dict, demo: bool, token: str, error: str = None) -> str
       <form method="post" action="/donate/submit" enctype="multipart/form-data">
         <input type="hidden" name="token" value="{html.escape(token)}">
         <h2>Amounts donated</h2>
+        <p class="note" style="margin-top:0;">Tap a quick amount below or type your own exact total.</p>
         <div class="grid2">
-          <div>
-            <label>🌾 Food</label>
-            <input type="text" name="food" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
-          </div>
-          <div>
-            <label>🪵 Wood</label>
-            <input type="text" name="wood" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
-          </div>
-          <div>
-            <label>🪨 Stone</label>
-            <input type="text" name="stone" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
-          </div>
-          <div>
-            <label>🪙 Gold</label>
-            <input type="text" name="gold" value="0" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
-          </div>
+          {_amount_field("🌾 Food", "food", quick_amounts)}
+          {_amount_field("🪵 Wood", "wood", quick_amounts)}
+          {_amount_field("🪨 Stone", "stone", quick_amounts)}
+          {_amount_field("🪙 Gold", "gold", quick_amounts)}
+        </div>
+        <div class="total-row">
+          <span>Total resources</span>
+          <span class="total-value" id="wolves-total-value">0</span>
         </div>
 
         <h2>Proof screenshot</h2>
         <label class="file-drop">
-          <span class="file-drop-text">📸 Tap to choose your Assistance Report screenshot</span>
+          <span class="file-drop-text">📸 Tap to choose, or drag and drop your Assistance Report screenshot</span>
           <input type="file" name="proof" accept="image/*" required onchange="window.__wolvesFileChange(this)">
         </label>
 
         {error_html}
-        <button type="submit">Submit Donation</button>
+        {submit_button("Submit Donation")}
       </form>
       <p class="note">This link is personal to you and expires 30 minutes after
       <code>/donate</code> was run. If it stops working, just run <code>/donate</code>
       again in Discord for a fresh one.</p>
       <a class="btn-link" href="/ticket?token={html.escape(token)}">🎫 Something not working? Get help</a>
     """
-    return render_page("Donate — WOLVES Alliance Bank", body, demo)
+    return render_page(
+        "Donate — WOLVES Alliance Bank",
+        body,
+        demo,
+        description=f"Log a resource donation to {payload.get('bank', 'the alliance bank')}.",
+    )
 
 
-def render_success(payload: dict, donated: dict, demo: bool) -> str:
+def render_progress_bars(weekly_totals: dict, minimum: int = WEEKLY_MINIMUM_PER_RESOURCE) -> str:
+    if not weekly_totals:
+        return ""
+    emoji = {"Food": "🌾", "Wood": "🪵", "Stone": "🪨", "Gold": "🪙"}
+    items = []
+    for name in ["Food", "Wood", "Stone", "Gold"]:
+        total = weekly_totals.get(name, 0)
+        pct = max(0, min(100, (total / minimum) * 100)) if minimum else 0
+        complete = total >= minimum
+        status = '<span class="done">✅ Done</span>' if complete else f"{fmt_num(minimum - total)} to go"
+        items.append(f"""
+          <div class="progress-item">
+            <div class="progress-top">
+              <span>{emoji.get(name, '')} {name} — {fmt_num(total)} / {fmt_num(minimum)}</span>
+              <span>{status}</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill{' complete' if complete else ''}" style="width:{pct:.0f}%"></div></div>
+          </div>
+        """)
+    return f"""
+      <div class="progress-block">
+        <h2>This week's progress</h2>
+        {''.join(items)}
+      </div>
+    """
+
+
+def render_success(payload: dict, donated: dict, demo: bool, weekly_totals: dict = None) -> str:
     display_name = html.escape(payload.get("n", "Donor"))
     rows = "".join(
         f'<li><span>{name}</span><span>{fmt_num(amount)}</span></li>'
@@ -274,6 +596,7 @@ def render_success(payload: dict, donated: dict, demo: bool) -> str:
         if demo
         else "<p class='note'>Check the Discord channel you ran /donate from for the confirmation post.</p>"
     )
+    progress_html = render_progress_bars(weekly_totals)
     body = f"""
       <div class="result">
         <div class="big">✅</div>
@@ -281,7 +604,9 @@ def render_success(payload: dict, donated: dict, demo: bool) -> str:
         <p class="sub">Thank you, {display_name}!</p>
       </div>
       <ul class="amounts">{rows}</ul>
+      {progress_html}
       {note}
+      <script>window.__wolvesConfetti && window.__wolvesConfetti();</script>
     """
     return render_page("Donation Recorded", body, demo)
 
@@ -326,11 +651,11 @@ def render_ticket_form(payload: dict, demo: bool, token: str, error: str = None)
         </label>
 
         {error_html}
-        <button type="submit">Open Ticket</button>
+        {submit_button("Open Ticket")}
       </form>
       <a class="btn-link" href="javascript:history.back()">&larr; Back</a>
     """
-    return render_page("Get Help", body, demo)
+    return render_page("Get Help", body, demo, description="Open a support ticket with the WOLVES alliance team.")
 
 
 def render_ticket_success(demo: bool) -> str:
@@ -576,6 +901,36 @@ async def handle_ticket_submit(request: web.Request):
     return web.Response(text=render_ticket_success(demo=False), content_type="text/html")
 
 
+async def _get_week_stats(guild_id) -> dict:
+    """Live countdown + weekly compliance numbers for the donation form,
+    computed with the exact same Saturday-aligned week window the bot's
+    DONATION GUIDE post uses (see sheets.current_week_window). Returns a
+    dict with days_left/compliant/total_members all None on any failure
+    (e.g. sheet briefly unreachable) so the page still renders fine without
+    the widget rather than erroring out."""
+    try:
+        start, end = sheets.current_week_window()
+        config = await server_config.get_config(guild_id)
+        compliant, total_members = await sheets.get_weekly_compliance(
+            config["donations_sheet_id"],
+            start,
+            end,
+            donations_tab_name=config["donations_tab_name"],
+            members_tab_name=config["alliance_members_tab_name"],
+            minimum=WEEKLY_MINIMUM_PER_RESOURCE,
+        )
+        return {
+            "days_left": sheets.days_until_reset(),
+            "compliant": compliant,
+            "total_members": total_members,
+            "start": start,
+            "end": end,
+        }
+    except Exception as e:
+        print(f"[webapp] couldn't load weekly stats: {e!r}")
+        return {"days_left": None, "compliant": None, "total_members": None, "start": None, "end": None}
+
+
 async def handle_root(request: web.Request):
     """Plain landing page for anyone who opens the bare domain directly
     instead of using their personal /donate link from Discord."""
@@ -587,8 +942,17 @@ async def handle_root(request: web.Request):
       </div>
       <p class="note">Go to Discord and run <code>/donate</code> to get your personal,
       one-time donation link, or <code>/ticket</code> if something's not working.</p>
+      <a class="btn-link" href="/demo">🧪 Try a safe demo of the donation flow</a>
     """
-    return web.Response(text=render_page("WOLVES Alliance Bank", body, demo=False), content_type="text/html")
+    return web.Response(
+        text=render_page(
+            "WOLVES Alliance Bank",
+            body,
+            demo=False,
+            description="Log alliance bank donations and support tickets for WOLVES | BRAVIA 3953.",
+        ),
+        content_type="text/html",
+    )
 
 
 async def handle_demo(request: web.Request):
@@ -609,7 +973,20 @@ async def handle_donate_get(request: web.Request):
     demo = bool(payload.get("demo")) if payload else False
     if not payload:
         return web.Response(text=render_error("This link is invalid or has expired."), content_type="text/html")
-    return web.Response(text=render_form(payload, demo, token), content_type="text/html")
+
+    if demo:
+        # Fun, static sample numbers -- no real sheet is touched for demo links.
+        stats = {"days_left": 6, "compliant": 42, "total_members": 122}
+    else:
+        stats = await _get_week_stats(payload.get("g"))
+
+    return web.Response(
+        text=render_form(
+            payload, demo, token,
+            days_left=stats["days_left"], compliant=stats["compliant"], total_members=stats["total_members"],
+        ),
+        content_type="text/html",
+    )
 
 
 async def handle_donate_submit(request: web.Request):
@@ -637,14 +1014,21 @@ async def handle_donate_submit(request: web.Request):
     proof = data.get("proof")
     has_file = proof is not None and getattr(proof, "filename", None)
 
-    if not donated:
-        return web.Response(
-            text=render_form(payload, demo, token, error="Enter at least one resource amount above 0."),
-            content_type="text/html",
+    if not donated or not has_file:
+        error = (
+            "Enter at least one resource amount above 0."
+            if not donated
+            else "Please attach your Assistance Report screenshot."
         )
-    if not has_file:
+        if demo:
+            stats = {"days_left": 6, "compliant": 42, "total_members": 122}
+        else:
+            stats = await _get_week_stats(payload.get("g"))
         return web.Response(
-            text=render_form(payload, demo, token, error="Please attach your Assistance Report screenshot."),
+            text=render_form(
+                payload, demo, token, error=error,
+                days_left=stats["days_left"], compliant=stats["compliant"], total_members=stats["total_members"],
+            ),
             content_type="text/html",
         )
 
@@ -655,11 +1039,17 @@ async def handle_donate_submit(request: web.Request):
     channel_id = payload.get("c")
 
     if demo:
-        # Safe preview: don't touch the real sheet or Discord.
+        # Safe preview: don't touch the real sheet or Discord. Show the
+        # amounts just entered as this week's "progress" so the demo still
+        # showcases the progress bars realistically.
         print(f"[webapp][DEMO] would log for guild={guild_id}: {display_name} -> {donated}")
-        return web.Response(text=render_success(payload, donated, demo=True), content_type="text/html")
+        demo_progress = {k: resources.get(k, 0) for k in sheets.RESOURCE_COLUMNS}
+        return web.Response(
+            text=render_success(payload, donated, demo=True, weekly_totals=demo_progress),
+            content_type="text/html",
+        )
 
-    # --- Real path (used once this is wired into the live bot) ---
+    # --- Real path ---
     config = await server_config.get_config(guild_id)
     try:
         await sheets.append_donation(
@@ -675,7 +1065,21 @@ async def handle_donate_submit(request: web.Request):
         )
 
     await send_discord_confirmation(channel_id, display_name, donated, filename, file_bytes)
-    return web.Response(text=render_success(payload, donated, demo=False), content_type="text/html")
+
+    weekly_totals = None
+    try:
+        start, end = sheets.current_week_window()
+        weekly_totals = await sheets.get_donor_weekly_progress(
+            config["donations_sheet_id"], display_name, start, end,
+            donations_tab_name=config["donations_tab_name"],
+        )
+    except Exception as e:
+        print(f"[webapp] couldn't load post-donation weekly progress: {e!r}")
+
+    return web.Response(
+        text=render_success(payload, donated, demo=False, weekly_totals=weekly_totals),
+        content_type="text/html",
+    )
 
 
 @web.middleware

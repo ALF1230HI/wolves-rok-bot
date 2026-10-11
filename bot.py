@@ -487,12 +487,14 @@ def _current_leaderboard_week(today=None) -> tuple:
     cycle -- not just "7 days back from today"). If today is itself a
     Saturday, that's the first day of a brand new week, so the window
     starts fresh at 0 and runs through the following Friday. `today` is
-    injectable for testing."""
+    injectable for testing.
+
+    Delegates the actual date math to sheets.current_week_window() so the
+    bot's DONATION GUIDE post and the donation website always agree on
+    exactly the same week -- see that function's docstring."""
     if today is None:
         today = datetime.now(LEADERBOARD_TIMEZONE).date()
-    days_since_saturday = (today.weekday() - LEADERBOARD_WEEKDAY) % 7
-    start = today - timedelta(days=days_since_saturday)
-    end = start + timedelta(days=6)
+    start, end = sheets.current_week_window(today)
     field_name = f"{LEADERBOARD_FIELD_PREFIX} This Week ({start.strftime('%b %-d')} – {end.strftime('%b %-d')})"
     return start, end, field_name
 
@@ -549,7 +551,7 @@ async def refresh_donation_leaderboard():
         start_date, end_date, leaderboard_field_name = _current_leaderboard_week(now_local.date())
 
         # --- Every run: countdown + compliance for the in-progress week ---
-        days_left = (LEADERBOARD_WEEKDAY - now_local.weekday()) % 7
+        days_left = sheets.days_until_reset(now_local.date())
         countdown_text = (
             "Resets **today** at noon! 🔁"
             if days_left == 0

@@ -10,7 +10,7 @@ don't block the bot's event loop.
 import os
 import json
 import asyncio
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -30,6 +30,35 @@ GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 # Column order must match each configured sheet's header row exactly:
 # Date | Alliance Member | Food | Wood | Stone | Gold
 RESOURCE_COLUMNS = ["Food", "Wood", "Stone", "Gold"]
+
+# Monday=0 ... Saturday=5. The alliance's weekly donation window resets
+# every Saturday -- shared by the bot's DONATION GUIDE post and the
+# donation website so both always agree on exactly the same week, instead
+# of each computing their own slightly-different version of "this week".
+WEEKLY_RESET_WEEKDAY = 5
+
+
+def current_week_window(today=None) -> tuple:
+    """Returns (start_date, end_date) for the current Saturday-to-Friday
+    week (7 days total). If `today` is itself a Saturday, that's the first
+    day of a brand new week, so the window starts right there and runs
+    through the following Friday. `today` is injectable for testing;
+    defaults to today's date in UTC terms (callers needing a specific
+    timezone's "today" should pass it in explicitly)."""
+    if today is None:
+        today = datetime.now(dt_timezone.utc).date()
+    days_since_reset = (today.weekday() - WEEKLY_RESET_WEEKDAY) % 7
+    start = today - timedelta(days=days_since_reset)
+    end = start + timedelta(days=6)
+    return start, end
+
+
+def days_until_reset(today=None) -> int:
+    """0 if `today` is reset day (Saturday) itself, otherwise how many days
+    remain until the next one."""
+    if today is None:
+        today = datetime.now(dt_timezone.utc).date()
+    return (WEEKLY_RESET_WEEKDAY - today.weekday()) % 7
 
 _client = None
 _service_account_email = None
@@ -274,6 +303,58 @@ async def get_weekly_compliance(
     loop."""
     return await asyncio.to_thread(
         _get_weekly_compliance_sync, sheet_id, donations_tab_name, members_tab_name, start_date, end_date, minimum
+    )
+
+
+def _get_donor_weekly_progress_sync(
+    sheet_id: str, donations_tab_name: str, display_name: str, start_date, end_date
+):
+    client = _get_client()
+    sheet = client.open_by_key(sheet_id)
+    ws = sheet.worksheet(donations_tab_name)
+    rows = ws.get_all_values()[1:]
+
+    def parse_number(value: str) -> float:
+        try:
+            return float(str(value).replace(",", "").strip() or 0)
+        except (ValueError, AttributeError):
+            return 0.0
+
+    key = display_name.strip().lower()
+    totals = {col: 0.0 for col in RESOURCE_COLUMNS}
+    for row in rows:
+        if not row or not row[0].strip() or len(row) < 2 or not row[1].strip():
+            continue
+        if row[1].strip().lower() != key:
+            continue
+        try:
+            row_date = datetime.strptime(row[0].strip(), "%m/%d/%y").date()
+        except ValueError:
+            continue
+        if not (start_date <= row_date <= end_date):
+            continue
+        for i, col in enumerate(RESOURCE_COLUMNS):
+            if len(row) > 2 + i:
+                totals[col] += parse_number(row[2 + i])
+
+    return totals
+
+
+async def get_donor_weekly_progress(
+    sheet_id: str,
+    display_name: str,
+    start_date,
+    end_date,
+    donations_tab_name: str = "Donations",
+):
+    """Returns {'Food': total, 'Wood': total, 'Stone': total, 'Gold': total}
+    for one specific donor within [start_date, end_date] -- used by the
+    donation website's success page to show "here's how close you are to
+    this week's 10M-per-resource minimum" progress bars right after someone
+    submits. Runs the blocking Sheets API call in a background thread so it
+    doesn't stall the event loop."""
+    return await asyncio.to_thread(
+        _get_donor_weekly_progress_sync, sheet_id, donations_tab_name, display_name, start_date, end_date
     )
 
 
