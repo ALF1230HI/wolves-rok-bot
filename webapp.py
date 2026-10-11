@@ -174,6 +174,12 @@ PAGE_SHELL = """<!DOCTYPE html>
   ol li {{ margin-bottom: 4px; }}
   ol li b {{ color: #fff; }}
   .note {{ font-size: 13px; color: #a98484; margin-top: 14px; line-height: 1.6; }}
+  .voluntary-note {{
+    display: flex; align-items: flex-start; gap: 10px; margin: 16px 0 4px;
+    padding: 12px 14px; border-radius: 12px; font-size: 13px; line-height: 1.55;
+    background: rgba(90,200,140,0.08); border: 1px solid rgba(90,200,140,0.3); color: #bfe8cf;
+  }}
+  .voluntary-note .icon {{ flex-shrink: 0; font-size: 16px; line-height: 1.4; }}
   label {{ display: block; font-size: 14px; color: #e9c9c9; margin: 14px 0 7px; font-weight: 600; }}
   input[type=number], input[type=text], textarea {{
     width: 100%; padding: 13px 14px; border-radius: 10px;
@@ -806,6 +812,13 @@ def render_form(
       <span class="pill">Donating as {display_name}</span>
       <h1><span class="wolf">🐺</span>Alliance Bank Donation</h1>
       <p class="sub">Follow the steps below, then log exactly what you sent.</p>
+      <div class="voluntary-note">
+        <span class="icon">💚</span>
+        <span>Donating is completely <b>voluntary</b> — it's not mandatory, and there's
+        no pressure or penalty either way. The weekly minimum below is just a friendly
+        target to aim for if you're able to. Every bit you give helps the alliance, but
+        it's always your choice. Thank you! 🐺</span>
+      </div>
       {stats_html}
       <h2>How it works</h2>
       <ol>
