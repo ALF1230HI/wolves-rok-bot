@@ -457,6 +457,7 @@ async def handle_donate_guide_button(interaction: discord.Interaction):
 DONATION_GUIDE_THREAD_ID = int(os.getenv("DONATION_GUIDE_THREAD_ID", "1558878159661834292"))
 DONATION_SUMMARY_TAB_NAME = os.getenv("DONATION_SUMMARY_TAB_NAME", "Donation Summary")
 LEADERBOARD_FIELD_PREFIX = "🏆 Top Donors"
+WEEKLY_MINIMUM_FIELD_PREFIX = "🎯 Weekly Minimum"
 COUNTDOWN_FIELD_PREFIX = "⏳ Resets In"
 COMPLIANCE_FIELD_PREFIX = "🧮 Weekly Compliance"
 CHAMPION_FIELD_PREFIX = "🎉 Last Week's Champion"
@@ -519,9 +520,10 @@ async def refresh_donation_leaderboard():
     """Keeps the DONATION GUIDE post current. Runs once a day at
     LEADERBOARD_RUN_TIME:
 
-    - Every day: refreshes the '⏳ Resets In' countdown and the '🧮 Weekly
-      Compliance' tracker (how many members have hit this week's 10M-per-
-      resource minimum so far) for the in-progress week.
+    - Every day: refreshes the '🎯 Weekly Minimum' reminder (kept explicitly
+      voluntary, matching the donation website), the '⏳ Resets In' countdown,
+      and the '🧮 Weekly Compliance' tracker (how many members have hit this
+      week's 10M-per-resource minimum so far) for the in-progress week.
     - Saturdays only: crowns the outgoing week's '🎉 Last Week's Champion',
       resets '🏆 Top Donors' to the brand new week, and posts a shout-out
       for the outgoing champion in the configured announcement channel.
@@ -550,7 +552,17 @@ async def refresh_donation_leaderboard():
         config = await server_config.get_config(guild_id)
         start_date, end_date, leaderboard_field_name = _current_leaderboard_week(now_local.date())
 
-        # --- Every run: countdown + compliance for the in-progress week ---
+        # --- Every run: weekly minimum reminder, countdown, and compliance ---
+        # Kept explicitly voluntary -- matches the donation website's own
+        # "not mandatory" note so the messaging is consistent everywhere.
+        minimum_text = (
+            f"A friendly weekly goal: **{WEEKLY_MINIMUM_PER_RESOURCE:,} of EACH resource "
+            f"(Food 🌾, Wood 🪵, Stone 🪨, Gold 🪙)** if you're able.\n"
+            f"Donating is completely **voluntary** — it's not mandatory, no pressure or "
+            f"penalty either way. It just helps the whole alliance grow faster. 🐺"
+        )
+        _set_or_insert_field(main_embed, WEEKLY_MINIMUM_FIELD_PREFIX, WEEKLY_MINIMUM_FIELD_PREFIX, minimum_text, False, insert_index=0)
+
         days_left = sheets.days_until_reset(now_local.date())
         countdown_text = (
             "Resets **today** at noon! 🔁"
@@ -567,7 +579,10 @@ async def refresh_donation_leaderboard():
             members_tab_name=config["alliance_members_tab_name"],
             minimum=WEEKLY_MINIMUM_PER_RESOURCE,
         )
-        compliance_text = f"**{compliant}/{total_members}** members have hit this week's minimum so far 💪"
+        compliance_text = (
+            f"**{compliant}/{total_members}** members have hit this week's minimum so far 💪 "
+            f"(totally optional — no pressure!)"
+        )
         _set_or_insert_field(main_embed, COMPLIANCE_FIELD_PREFIX, COMPLIANCE_FIELD_PREFIX, compliance_text, True, insert_index=2)
 
         # --- Saturdays only: crown last week's champion + reset the board ---
