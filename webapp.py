@@ -725,7 +725,15 @@ def build_app() -> web.Application:
     app.router.add_post("/donate/submit", handle_donate_submit)
     app.router.add_get("/ticket", handle_ticket_get)
     app.router.add_post("/ticket/submit", handle_ticket_submit)
+    # Serves static images (e.g. the DONATION GUIDE's banner and example
+    # screenshot) from a stable URL on our own domain. Discord embeds that
+    # reference images this way (a plain https:// URL) never expire and --
+    # unlike attachment://-based embed images -- don't trigger Discord's
+    # known bug where editing a message later makes the image render twice
+    # (see https://github.com/discord/discord-api-docs/issues/5675).
+    app.router.add_static("/assets/", path=os.path.join(os.path.dirname(__file__), "assets"), name="assets")
     return app
+
 
 
 if __name__ == "__main__":
