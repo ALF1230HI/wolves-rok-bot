@@ -457,6 +457,10 @@ async def handle_donate_guide_button(interaction: discord.Interaction):
 DONATION_GUIDE_THREAD_ID = int(os.getenv("DONATION_GUIDE_THREAD_ID", "1558878159661834292"))
 DONATION_SUMMARY_TAB_NAME = os.getenv("DONATION_SUMMARY_TAB_NAME", "Donation Summary")
 LEADERBOARD_FIELD_PREFIX = "🏆 Top Donors"
+COUNTDOWN_FIELD_PREFIX = "⏳ Resets In"
+COMPLIANCE_FIELD_PREFIX = "🧮 Weekly Compliance"
+CHAMPION_FIELD_PREFIX = "🎉 Last Week's Champion"
+WEEKLY_MINIMUM_PER_RESOURCE = 10_000_000
 # The weekly leaderboard resets every Saturday at noon UK time, in line with
 # the alliance's 10M-per-resource weekly minimum. ZoneInfo (not a fixed UTC
 # offset) so this stays correct across the UK's BST/GMT clock changes.
@@ -493,19 +497,40 @@ def _current_leaderboard_week(today=None) -> tuple:
     return start, end, field_name
 
 
+def _set_or_insert_field(embed: discord.Embed, prefix: str, name: str, value: str, inline: bool, insert_index=None):
+    """Updates the first field whose name starts with `prefix`, or inserts a
+    brand new one (at `insert_index`, or at the end if that's None/missing)
+    if no such field exists yet -- lets us roll new fields out onto an
+    already-live post without needing to delete and recreate it."""
+    for i, field in enumerate(embed.fields or []):
+        if field.name and field.name.startswith(prefix):
+            embed.set_field_at(i, name=name, value=value, inline=inline)
+            return
+    if insert_index is None or insert_index >= len(embed.fields):
+        embed.add_field(name=name, value=value, inline=inline)
+    else:
+        embed.insert_field_at(insert_index, name=name, value=value, inline=inline)
+
+
 @tasks.loop(time=LEADERBOARD_RUN_TIME)
 async def refresh_donation_leaderboard():
-    """Keeps the DONATION GUIDE post's '🏆 Top Donors' field current. Runs
-    once a day at LEADERBOARD_RUN_TIME but only actually does anything on
-    Saturdays, resetting the leaderboard to that week's donations (rather
-    than an all-time total) each time. Only touches that one field -- the
-    banner, steps, and example screenshot embeds are left exactly as they
-    are, and no files are re-uploaded (images are served from our own
-    domain now, not Discord attachments, so a plain text/field edit is all
-    this needs -- see the /assets/ static route in webapp.py)."""
+    """Keeps the DONATION GUIDE post current. Runs once a day at
+    LEADERBOARD_RUN_TIME:
+
+    - Every day: refreshes the '⏳ Resets In' countdown and the '🧮 Weekly
+      Compliance' tracker (how many members have hit this week's 10M-per-
+      resource minimum so far) for the in-progress week.
+    - Saturdays only: crowns the outgoing week's '🎉 Last Week's Champion',
+      resets '🏆 Top Donors' to the brand new week, and posts a shout-out
+      for the outgoing champion in the configured announcement channel.
+
+    Only touches these specific fields -- the banner, steps, and example
+    screenshot embeds are left exactly as they are, and no files are
+    re-uploaded (images are served from our own domain now, not Discord
+    attachments, so a plain text/field edit is all this needs -- see the
+    /assets/ static route in webapp.py)."""
     now_local = datetime.now(LEADERBOARD_TIMEZONE)
-    if now_local.weekday() != LEADERBOARD_WEEKDAY:
-        return
+    is_reset_day = now_local.weekday() == LEADERBOARD_WEEKDAY
     try:
         channel = bot.get_channel(DONATION_GUIDE_THREAD_ID)
         if channel is None:
@@ -515,28 +540,82 @@ async def refresh_donation_leaderboard():
         embeds = message.embeds
         if not embeds:
             return
+        main_embed = next((e for e in embeds if e.title and "DONATION GUIDE" in e.title), None)
+        if main_embed is None:
+            return
 
         guild_id = channel.guild.id if getattr(channel, "guild", None) else GUILD_ID
         config = await server_config.get_config(guild_id)
-        start_date, end_date, field_name = _current_leaderboard_week(now_local.date())
-        ranked = await sheets.get_weekly_top_donors(
+        start_date, end_date, leaderboard_field_name = _current_leaderboard_week(now_local.date())
+
+        # --- Every run: countdown + compliance for the in-progress week ---
+        days_left = (LEADERBOARD_WEEKDAY - now_local.weekday()) % 7
+        countdown_text = (
+            "Resets **today** at noon! 🔁"
+            if days_left == 0
+            else f"**{days_left} day{'s' if days_left != 1 else ''}** until next reset (Saturday) 🔁"
+        )
+        _set_or_insert_field(main_embed, COUNTDOWN_FIELD_PREFIX, COUNTDOWN_FIELD_PREFIX, countdown_text, True, insert_index=1)
+
+        compliant, total_members = await sheets.get_weekly_compliance(
             config["donations_sheet_id"],
             start_date,
             end_date,
             donations_tab_name=config["donations_tab_name"],
+            members_tab_name=config["alliance_members_tab_name"],
+            minimum=WEEKLY_MINIMUM_PER_RESOURCE,
         )
-        leaderboard_text = _format_leaderboard(ranked)
+        compliance_text = f"**{compliant}/{total_members}** members have hit this week's minimum so far 💪"
+        _set_or_insert_field(main_embed, COMPLIANCE_FIELD_PREFIX, COMPLIANCE_FIELD_PREFIX, compliance_text, True, insert_index=2)
 
-        updated = False
-        for embed in embeds:
-            for i, field in enumerate(embed.fields or []):
-                if field.name and field.name.startswith(LEADERBOARD_FIELD_PREFIX):
-                    embed.set_field_at(i, name=field_name, value=leaderboard_text, inline=field.inline)
-                    updated = True
+        # --- Saturdays only: crown last week's champion + reset the board ---
+        if is_reset_day:
+            prev_start = start_date - timedelta(days=7)
+            prev_end = end_date - timedelta(days=7)
+            outgoing = await sheets.get_weekly_top_donors(
+                config["donations_sheet_id"],
+                prev_start,
+                prev_end,
+                donations_tab_name=config["donations_tab_name"],
+                limit=1,
+            )
+            date_range = f"{prev_start.strftime('%b %-d')}–{prev_end.strftime('%b %-d')}"
+            if outgoing:
+                champ_name, champ_total = outgoing[0]
+                champion_text = f"👑 **{champ_name}** — {champ_total:,.0f} ({date_range})"
+            else:
+                champion_text = f"No donations were logged ({date_range})."
+            donor_field_index = next(
+                (i for i, f in enumerate(main_embed.fields) if f.name and f.name.startswith(LEADERBOARD_FIELD_PREFIX)),
+                None,
+            )
+            _set_or_insert_field(
+                main_embed, CHAMPION_FIELD_PREFIX, CHAMPION_FIELD_PREFIX, champion_text, False,
+                insert_index=donor_field_index,
+            )
 
-        if updated:
-            await message.edit(embeds=embeds)
-            print(f"[donation-guide] weekly leaderboard reset for {start_date}–{end_date} ({len(ranked)} donor(s))")
+            ranked = await sheets.get_weekly_top_donors(
+                config["donations_sheet_id"],
+                start_date,
+                end_date,
+                donations_tab_name=config["donations_tab_name"],
+            )
+            leaderboard_text = _format_leaderboard(ranked)
+            _set_or_insert_field(main_embed, LEADERBOARD_FIELD_PREFIX, leaderboard_field_name, leaderboard_text, False)
+
+            if outgoing and config.get("announce_channel_id"):
+                announce_channel = bot.get_channel(config["announce_channel_id"])
+                if announce_channel is not None:
+                    try:
+                        await announce_channel.send(
+                            f"🎉 Congrats to **{outgoing[0][0]}** for leading last week's alliance bank donations "
+                            f"with **{outgoing[0][1]:,.0f}** total resources! 👑 Keep it up, everyone!"
+                        )
+                    except Exception as e:
+                        print(f"[donation-guide] failed to post weekly champion announcement: {e!r}")
+
+        await message.edit(embeds=embeds)
+        print(f"[donation-guide] daily refresh done (Saturday reset: {is_reset_day})")
     except Exception as e:
         print(f"[donation-guide] failed to refresh leaderboard: {e!r}")
 

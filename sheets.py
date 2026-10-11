@@ -205,6 +205,78 @@ async def get_weekly_top_donors(
     )
 
 
+def _get_weekly_compliance_sync(
+    sheet_id: str,
+    donations_tab_name: str,
+    members_tab_name: str,
+    start_date,
+    end_date,
+    minimum: float,
+):
+    client = _get_client()
+    sheet = client.open_by_key(sheet_id)
+
+    members_ws = sheet.worksheet(members_tab_name)
+    member_names = [n.strip() for n in members_ws.col_values(1)[1:] if n.strip()]
+    total_members = len(member_names)
+
+    donations_ws = sheet.worksheet(donations_tab_name)
+    rows = donations_ws.get_all_values()[1:]
+
+    def parse_number(value: str) -> float:
+        try:
+            return float(str(value).replace(",", "").strip() or 0)
+        except (ValueError, AttributeError):
+            return 0.0
+
+    # Per-member, per-resource totals for the week (case-insensitive key, same
+    # reasoning as get_weekly_top_donors -- a member's name casing can vary
+    # between rows).
+    per_resource: dict[str, dict[str, float]] = {}
+    for row in rows:
+        if not row or not row[0].strip() or len(row) < 2 or not row[1].strip():
+            continue
+        try:
+            row_date = datetime.strptime(row[0].strip(), "%m/%d/%y").date()
+        except ValueError:
+            continue
+        if not (start_date <= row_date <= end_date):
+            continue
+
+        key = row[1].strip().lower()
+        bucket = per_resource.setdefault(key, {col: 0.0 for col in RESOURCE_COLUMNS})
+        for i, col in enumerate(RESOURCE_COLUMNS):
+            if len(row) > 2 + i:
+                bucket[col] += parse_number(row[2 + i])
+
+    compliant = 0
+    for name in member_names:
+        bucket = per_resource.get(name.lower())
+        if bucket and all(bucket[col] >= minimum for col in RESOURCE_COLUMNS):
+            compliant += 1
+
+    return compliant, total_members
+
+
+async def get_weekly_compliance(
+    sheet_id: str,
+    start_date,
+    end_date,
+    donations_tab_name: str = "Donations",
+    members_tab_name: str = "Alliance Members",
+    minimum: float = 10_000_000,
+):
+    """Returns (compliant_count, total_members) -- how many registered
+    alliance members have donated at least `minimum` of EACH resource
+    (Food, Wood, Stone, Gold) within [start_date, end_date]. Used for the
+    DONATION GUIDE's weekly compliance tracker. Runs the blocking Sheets
+    API call in a background thread so it doesn't stall the bot's event
+    loop."""
+    return await asyncio.to_thread(
+        _get_weekly_compliance_sync, sheet_id, donations_tab_name, members_tab_name, start_date, end_date, minimum
+    )
+
+
 async def append_donation(
     display_name: str,
     resources: dict,
