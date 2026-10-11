@@ -297,7 +297,13 @@ def still_need_help_component(thread_id) -> dict:
                 "style": 2,
                 "label": "🙋 Still need help?",
                 "custom_id": f"escalate_ticket:{thread_id}",
-            }
+            },
+            {
+                "type": 2,
+                "style": 3,
+                "label": "✅ Resolved — Close Ticket",
+                "custom_id": f"close_ticket:{thread_id}",
+            },
         ],
     }
 
@@ -361,3 +367,9 @@ def pause_session(thread_id: int) -> None:
 def is_ai_active(thread_id: int) -> bool:
     session = TICKET_SESSIONS.get(int(thread_id))
     return bool(session and session.get("ai_active", False))
+
+
+def end_session(thread_id: int) -> None:
+    """Drops a ticket's conversation state entirely, e.g. once its thread
+    has been closed and deleted -- there's nothing left to keep track of."""
+    TICKET_SESSIONS.pop(int(thread_id), None)

@@ -16,6 +16,7 @@ Setup:
 import os
 import re
 import time
+import asyncio
 import discord
 import aiohttp
 from aiohttp import web as aiohttp_web
@@ -264,6 +265,8 @@ async def on_interaction(interaction: discord.Interaction):
         custom_id = (interaction.data or {}).get("custom_id", "")
         if custom_id.startswith("escalate_ticket:"):
             await handle_escalate_button(interaction)
+        elif custom_id.startswith("close_ticket:"):
+            await handle_close_button(interaction)
 
 
 async def handle_escalate_button(interaction: discord.Interaction):
@@ -660,6 +663,13 @@ async def post_ai_ticket_response(thread, issue: str, opener_id: int, images: li
                 custom_id=f"escalate_ticket:{thread.id}",
             )
         )
+        view.add_item(
+            discord.ui.Button(
+                label="✅ Resolved — Close Ticket",
+                style=discord.ButtonStyle.success,
+                custom_id=f"close_ticket:{thread.id}",
+            )
+        )
         await thread.send(embed=ai_embed, view=view)
     else:
         ai_embed.set_footer(text="Looping in a human for this one.")
@@ -761,17 +771,94 @@ async def _bootstrap_ticket_session(thread):
     return ai_helper.set_session(thread.id, opener_id, history, ai_active=not other_human_spoke)
 
 
-def _is_ticket_staff(message: discord.Message) -> bool:
+def _is_ticket_staff(user) -> bool:
     """True for anyone allowed to post in a ticket thread besides the
-    opener: admins/mods (by Discord permission, same bar as other
-    admin-only commands in this bot) or the designated human ticket
-    helper. Everyone else gets their messages removed from ticket
-    threads so the conversation stays just between the opener and the AI
-    (and staff when they step in)."""
-    if message.author.id == ai_helper.HUMAN_HELPER_USER_ID:
+    opener, or to close/escalate one: admins/mods (by Discord permission,
+    same bar as other admin-only commands in this bot) or the designated
+    human ticket helper. Everyone else gets their messages removed from
+    ticket threads so the conversation stays just between the opener and
+    the AI (and staff when they step in). Takes any Discord user/member
+    object (message.author, interaction.user, ...)."""
+    if user.id == ai_helper.HUMAN_HELPER_USER_ID:
         return True
-    perms = getattr(message.author, "guild_permissions", None)
+    perms = getattr(user, "guild_permissions", None)
     return bool(perms and (perms.administrator or perms.manage_messages))
+
+
+CLOSE_TICKET_RE = re.compile(r"\bclose\b.{0,15}\b(ticket|this|it)\b", re.IGNORECASE)
+CLOSE_COUNTDOWN_SECONDS = 10
+
+# thread_id -> asyncio.Event. Setting the event cancels that thread's
+# in-progress close countdown (see _run_ticket_close_countdown and the
+# on_message/handle_close_button hooks that set it).
+PENDING_TICKET_CLOSES: dict = {}
+
+
+async def _run_ticket_close_countdown(thread, triggered_by) -> None:
+    """Posts a closing notice, waits CLOSE_COUNTDOWN_SECONDS for anyone
+    allowed to post in the thread to say something else (which cancels
+    it), and actually deletes the thread if nobody does."""
+    cancel_event = asyncio.Event()
+    PENDING_TICKET_CLOSES[thread.id] = cancel_event
+    try:
+        try:
+            await thread.send(
+                f"🔒 {triggered_by.mention} marked this resolved -- closing (and deleting) this ticket "
+                f"in {CLOSE_COUNTDOWN_SECONDS} seconds.\n**Type anything in that time and it'll stay open.**"
+            )
+        except Exception as e:
+            print(f"[ticket] couldn't post close notice for thread {thread.id}: {e!r}")
+
+        try:
+            await asyncio.wait_for(cancel_event.wait(), timeout=CLOSE_COUNTDOWN_SECONDS)
+            # Someone typed during the countdown -- leave it open.
+            try:
+                await thread.send("✅ Got it — keeping this ticket open.")
+            except Exception as e:
+                print(f"[ticket] couldn't post close-cancelled notice for thread {thread.id}: {e!r}")
+        except asyncio.TimeoutError:
+            # Nobody objected in time -- actually close it.
+            try:
+                await thread.send("🗑️ Closing this ticket now. Thanks for reaching out!")
+            except Exception as e:
+                print(f"[ticket] couldn't post final close notice for thread {thread.id}: {e!r}")
+            ai_helper.end_session(thread.id)
+            try:
+                await thread.delete()
+            except Exception as e:
+                print(f"[ticket] failed to delete thread {thread.id} on close: {e!r}")
+    finally:
+        PENDING_TICKET_CLOSES.pop(thread.id, None)
+
+
+async def handle_close_button(interaction: discord.Interaction):
+    """Handles clicks on the '✅ Resolved -- Close Ticket' button attached
+    to a confident AI response. Only the ticket opener or staff can
+    actually trigger it."""
+    thread = interaction.channel
+    if thread is None:
+        return
+    session = ai_helper.get_session(thread.id)
+    opener_id = session.get("opener_id") if session else None
+    allowed = interaction.user.id == opener_id or _is_ticket_staff(interaction.user)
+    if not allowed:
+        try:
+            await interaction.response.send_message(
+                "Only the ticket opener or staff can close this ticket.", ephemeral=True
+            )
+        except Exception as e:
+            print(f"[ticket] failed to reject close click: {e!r}")
+        return
+
+    try:
+        await interaction.response.edit_message(view=None)
+    except Exception as e:
+        print(f"[ticket] failed to clear buttons on close click: {e!r}")
+
+    if thread.id in PENDING_TICKET_CLOSES:
+        return  # already counting down, nothing more to do
+
+    asyncio.create_task(_run_ticket_close_countdown(thread, interaction.user))
 
 
 @bot.event
@@ -792,7 +879,7 @@ async def on_message(message: discord.Message):
             return
 
     if message.author.id != session.get("opener_id"):
-        if _is_ticket_staff(message):
+        if _is_ticket_staff(message.author):
             # A human helper/admin stepped in -- stop the AI from talking
             # over them, but let their message stand.
             ai_helper.pause_session(thread.id)
@@ -815,6 +902,21 @@ async def on_message(message: discord.Message):
         except Exception as e:
             print(f"[ticket] couldn't post lock notice in thread {thread.id}: {e!r}")
         return
+
+    # The opener (or staff, handled above) said something -- if this
+    # thread has a close countdown running, either honor an explicit new
+    # close request (no-op, one's already in progress) or treat anything
+    # else as "actually, I still need help" and cancel it.
+    is_close_request = bool(CLOSE_TICKET_RE.search(message.content or ""))
+    pending_cancel_event = PENDING_TICKET_CLOSES.get(thread.id)
+
+    if is_close_request:
+        if pending_cancel_event is None:
+            asyncio.create_task(_run_ticket_close_countdown(thread, message.author))
+        return
+
+    if pending_cancel_event is not None and not pending_cancel_event.is_set():
+        pending_cancel_event.set()
 
     if not session.get("ai_active", False):
         return
@@ -866,6 +968,13 @@ async def on_message(message: discord.Message):
                 label="🙋 Still need help?",
                 style=discord.ButtonStyle.secondary,
                 custom_id=f"escalate_ticket:{thread.id}",
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                label="✅ Resolved — Close Ticket",
+                style=discord.ButtonStyle.success,
+                custom_id=f"close_ticket:{thread.id}",
             )
         )
         await thread.send(embed=ai_embed, view=view)
