@@ -109,7 +109,10 @@ PAGE_SHELL = """<!DOCTYPE html>
   html {{ -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }}
   body {{
     margin: 0; padding: 0;
-    background: radial-gradient(circle at top, #1b0e0e 0%, #0b0505 60%, #050202 100%);
+    background:
+      radial-gradient(circle at top, rgba(27,14,14,0.55) 0%, rgba(11,5,5,0.82) 55%, rgba(5,2,2,0.95) 100%),
+      url('/assets/site_background.jpg') center top / cover no-repeat fixed,
+      #0b0505;
     color: #f1e9e9;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     min-height: 100vh;
@@ -117,6 +120,17 @@ PAGE_SHELL = """<!DOCTYPE html>
     display: flex; justify-content: center;
     overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
+  }}
+  /* background-attachment: fixed is unreliable on iOS Safari, where it can
+     make backgrounds disappear while scrolling -- fall back to normal
+     scroll attachment there instead. */
+  @supports (-webkit-touch-callout: none) {{
+    body {{
+      background:
+        radial-gradient(circle at top, rgba(27,14,14,0.55) 0%, rgba(11,5,5,0.82) 55%, rgba(5,2,2,0.95) 100%),
+        url('/assets/site_background.jpg') center top / cover no-repeat scroll,
+        #0b0505;
+    }}
   }}
   .wrap {{
     width: 100%; max-width: 560px;
