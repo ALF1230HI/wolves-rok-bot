@@ -787,6 +787,10 @@ def _is_ticket_staff(user) -> bool:
 
 CLOSE_TICKET_RE = re.compile(r"\bclose\b.{0,15}\b(ticket|this|it)\b", re.IGNORECASE)
 CLOSE_COUNTDOWN_SECONDS = 10
+# How often the countdown message is edited to show the next number. Kept as
+# its own constant (rather than hardcoding 1) so tests can shrink both this
+# and CLOSE_COUNTDOWN_SECONDS to run the whole countdown near-instantly.
+CLOSE_COUNTDOWN_TICK_SECONDS = 1
 
 # thread_id -> asyncio.Event. Setting the event cancels that thread's
 # in-progress close countdown (see _run_ticket_close_countdown and the
@@ -794,39 +798,67 @@ CLOSE_COUNTDOWN_SECONDS = 10
 PENDING_TICKET_CLOSES: dict = {}
 
 
+def _close_countdown_text(triggered_by, seconds_left: int) -> str:
+    return (
+        f"🔒 {triggered_by.mention} marked this resolved -- closing (and deleting) this ticket in "
+        f"**{seconds_left}**...\n*Type anything in that time and it'll stay open.*"
+    )
+
+
 async def _run_ticket_close_countdown(thread, triggered_by) -> None:
-    """Posts a closing notice, waits CLOSE_COUNTDOWN_SECONDS for anyone
-    allowed to post in the thread to say something else (which cancels
-    it), and actually deletes the thread if nobody does."""
+    """Posts a closing notice and live-edits it every tick to count down
+    from CLOSE_COUNTDOWN_SECONDS, actually deleting the thread if nobody
+    allowed to post in it says anything else before it reaches zero."""
     cancel_event = asyncio.Event()
     PENDING_TICKET_CLOSES[thread.id] = cancel_event
-    try:
-        try:
-            await thread.send(
-                f"🔒 {triggered_by.mention} marked this resolved -- closing (and deleting) this ticket "
-                f"in {CLOSE_COUNTDOWN_SECONDS} seconds.\n**Type anything in that time and it'll stay open.**"
-            )
-        except Exception as e:
-            print(f"[ticket] couldn't post close notice for thread {thread.id}: {e!r}")
 
-        try:
-            await asyncio.wait_for(cancel_event.wait(), timeout=CLOSE_COUNTDOWN_SECONDS)
+    countdown_msg = None
+    try:
+        countdown_msg = await thread.send(_close_countdown_text(triggered_by, CLOSE_COUNTDOWN_SECONDS))
+    except Exception as e:
+        print(f"[ticket] couldn't post close notice for thread {thread.id}: {e!r}")
+
+    try:
+        remaining = CLOSE_COUNTDOWN_SECONDS
+        cancelled = False
+        while remaining > 0:
+            try:
+                await asyncio.wait_for(cancel_event.wait(), timeout=CLOSE_COUNTDOWN_TICK_SECONDS)
+                cancelled = True
+                break
+            except asyncio.TimeoutError:
+                pass
+            remaining -= 1
+            if remaining > 0 and countdown_msg is not None:
+                try:
+                    await countdown_msg.edit(content=_close_countdown_text(triggered_by, remaining))
+                except Exception as e:
+                    print(f"[ticket] couldn't update close countdown for thread {thread.id}: {e!r}")
+
+        if cancelled:
             # Someone typed during the countdown -- leave it open.
             try:
-                await thread.send("✅ Got it — keeping this ticket open.")
+                if countdown_msg is not None:
+                    await countdown_msg.edit(content="✅ Got it — keeping this ticket open.")
+                else:
+                    await thread.send("✅ Got it — keeping this ticket open.")
             except Exception as e:
                 print(f"[ticket] couldn't post close-cancelled notice for thread {thread.id}: {e!r}")
-        except asyncio.TimeoutError:
-            # Nobody objected in time -- actually close it.
-            try:
+            return
+
+        # Nobody objected before the countdown ran out -- actually close it.
+        try:
+            if countdown_msg is not None:
+                await countdown_msg.edit(content="🗑️ Closing this ticket now. Thanks for reaching out!")
+            else:
                 await thread.send("🗑️ Closing this ticket now. Thanks for reaching out!")
-            except Exception as e:
-                print(f"[ticket] couldn't post final close notice for thread {thread.id}: {e!r}")
-            ai_helper.end_session(thread.id)
-            try:
-                await thread.delete()
-            except Exception as e:
-                print(f"[ticket] failed to delete thread {thread.id} on close: {e!r}")
+        except Exception as e:
+            print(f"[ticket] couldn't post final close notice for thread {thread.id}: {e!r}")
+        ai_helper.end_session(thread.id)
+        try:
+            await thread.delete()
+        except Exception as e:
+            print(f"[ticket] failed to delete thread {thread.id} on close: {e!r}")
     finally:
         PENDING_TICKET_CLOSES.pop(thread.id, None)
 
