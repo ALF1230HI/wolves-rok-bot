@@ -234,7 +234,7 @@ async def get_weekly_top_donors(
     )
 
 
-def _get_weekly_compliance_sync(
+def _compute_weekly_compliance_sync(
     sheet_id: str,
     donations_tab_name: str,
     members_tab_name: str,
@@ -242,12 +242,15 @@ def _get_weekly_compliance_sync(
     end_date,
     minimum: float,
 ):
+    """Shared logic for the two public compliance functions below -- reads
+    the registered member list plus every donation row in the window and
+    returns (compliant_names, member_names), both in the Alliance Members
+    tab's original order/casing."""
     client = _get_client()
     sheet = client.open_by_key(sheet_id)
 
     members_ws = sheet.worksheet(members_tab_name)
     member_names = [n.strip() for n in members_ws.col_values(1)[1:] if n.strip()]
-    total_members = len(member_names)
 
     donations_ws = sheet.worksheet(donations_tab_name)
     rows = donations_ws.get_all_values()[1:]
@@ -278,13 +281,13 @@ def _get_weekly_compliance_sync(
             if len(row) > 2 + i:
                 bucket[col] += parse_number(row[2 + i])
 
-    compliant = 0
+    compliant_names = []
     for name in member_names:
         bucket = per_resource.get(name.lower())
         if bucket and all(bucket[col] >= minimum for col in RESOURCE_COLUMNS):
-            compliant += 1
+            compliant_names.append(name)
 
-    return compliant, total_members
+    return compliant_names, member_names
 
 
 async def get_weekly_compliance(
@@ -301,9 +304,28 @@ async def get_weekly_compliance(
     DONATION GUIDE's weekly compliance tracker. Runs the blocking Sheets
     API call in a background thread so it doesn't stall the bot's event
     loop."""
-    return await asyncio.to_thread(
-        _get_weekly_compliance_sync, sheet_id, donations_tab_name, members_tab_name, start_date, end_date, minimum
+    compliant_names, member_names = await asyncio.to_thread(
+        _compute_weekly_compliance_sync, sheet_id, donations_tab_name, members_tab_name, start_date, end_date, minimum
     )
+    return len(compliant_names), len(member_names)
+
+
+async def get_weekly_compliance_detail(
+    sheet_id: str,
+    start_date,
+    end_date,
+    donations_tab_name: str = "Donations",
+    members_tab_name: str = "Alliance Members",
+    minimum: float = 10_000_000,
+):
+    """Like get_weekly_compliance, but returns the actual
+    (compliant_names, total_members) instead of just a count -- used by the
+    donation website's Compliance tab to show who's already hit this
+    week's minimum."""
+    compliant_names, member_names = await asyncio.to_thread(
+        _compute_weekly_compliance_sync, sheet_id, donations_tab_name, members_tab_name, start_date, end_date, minimum
+    )
+    return compliant_names, len(member_names)
 
 
 def _get_donor_weekly_progress_sync(

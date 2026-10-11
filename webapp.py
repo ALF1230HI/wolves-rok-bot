@@ -40,6 +40,10 @@ import ai_helper
 
 RED_HEX = "#FF0000"
 WEEKLY_MINIMUM_PER_RESOURCE = 10_000_000
+# The "All-Time" tab reads from the same running-totals tab the old
+# all-time leaderboard used, before it was replaced by the weekly-reset
+# one -- still handy here as a Hall of Fame view alongside the live week.
+DONATION_SUMMARY_TAB_NAME = os.getenv("DONATION_SUMMARY_TAB_NAME", "Donation Summary")
 
 # Tiny inline wolf-head favicon -- a data: URI so it works even inside the
 # sandboxed, network-less preview iframe (no external file request needed).
@@ -187,7 +191,7 @@ PAGE_SHELL = """<!DOCTYPE html>
   .field-block {{ position: relative; }}
   .chip-row {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }}
   .chip {{
-    appearance: none; -webkit-appearance: none; border: 1px solid rgba(255,255,255,0.18);
+    width: auto; margin-top: 0; appearance: none; -webkit-appearance: none; border: 1px solid rgba(255,255,255,0.18);
     background: rgba(255,255,255,0.05); color: #e9c9c9; font-size: 11.5px; font-weight: 700;
     padding: 5px 10px; border-radius: 999px; cursor: pointer; touch-action: manipulation;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
@@ -305,8 +309,47 @@ PAGE_SHELL = """<!DOCTYPE html>
     pointer-events: none; white-space: nowrap;
   }}
   .toast.show {{ opacity: 1; transform: translateX(-50%) translateY(0); }}
+  .tab-bar {{
+    display: flex; gap: 6px; overflow-x: auto; margin-bottom: 20px; padding-bottom: 2px;
+    -ms-overflow-style: none; scrollbar-width: none;
+  }}
+  .tab-bar::-webkit-scrollbar {{ display: none; }}
+  .tab-btn {{
+    flex: 0 0 auto; width: auto; margin-top: 0; white-space: nowrap; appearance: none; -webkit-appearance: none;
+    border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.03);
+    color: #cf9f9f; font-size: 13px; font-weight: 700; padding: 9px 14px; border-radius: 999px;
+    cursor: pointer; touch-action: manipulation; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }}
+  .tab-btn.active {{ background: {red}; border-color: {red}; color: #fff; }}
+  .tab-btn:active {{ transform: scale(0.97); }}
+  .tab-panel {{ display: none; animation: wolvesFadeUp 0.3s ease both; }}
+  .tab-panel.active {{ display: block; }}
+  .board-list {{ list-style: none; padding: 0; margin: 0 0 4px; }}
+  .board-list li {{
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 11px 14px; border-radius: 10px; background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06); margin-bottom: 7px; font-size: 14px;
+    animation: wolvesFadeUp 0.35s ease both;
+  }}
+  .board-list .rank {{ font-size: 15px; width: 26px; flex-shrink: 0; color: #cf9f9f; font-weight: 700; }}
+  .board-list .donor-name {{ flex: 1; color: #f1e9e9; font-weight: 600; }}
+  .board-list .donor-total {{ color: #ff9a9a; font-weight: 700; font-variant-numeric: tabular-nums; }}
+  .compliance-hero {{ text-align: center; margin-bottom: 18px; }}
+  .compliance-hero .big-ratio {{ font-size: 40px; font-weight: 800; color: #fff; }}
+  .compliance-hero .big-sub {{ font-size: 13px; color: #cf9f9f; margin-top: 4px; }}
+  .compliance-track {{ height: 12px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; margin-top: 12px; }}
+  .compliance-fill {{
+    height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2ecf6f, #7be37b);
+    transition: width 0.8s cubic-bezier(.22,1,.36,1); width: 0%;
+  }}
+  .compliant-grid {{ display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }}
+  .compliant-chip {{
+    background: rgba(46,207,111,0.12); border: 1px solid rgba(46,207,111,0.35); color: #9cf0b8;
+    font-size: 12.5px; font-weight: 600; padding: 6px 11px; border-radius: 999px;
+  }}
+  .empty-state {{ text-align: center; padding: 24px 10px; color: #a98484; font-size: 14px; }}
   @media (prefers-reduced-motion: reduce) {{
-    .card, .stat-box, .mini-board li, .tier-badge, .error, .result .big {{ animation: none !important; }}
+    .card, .stat-box, .mini-board li, .tier-badge, .error, .result .big, .tab-panel, .board-list li {{ animation: none !important; }}
   }}
 </style>
 </head>
@@ -323,6 +366,28 @@ PAGE_SHELL = """<!DOCTYPE html>
 <div class="toast" id="wolves-toast"></div>
 <script>
   var WOLVES_MAX_UPLOAD_BYTES = {max_upload_bytes};
+
+  // Tab switching -- all tab panels are rendered server-side up front;
+  // this just toggles which one is visible, with the active tab
+  // remembered per-page-type (donate vs ticket) in sessionStorage so a
+  // refresh (e.g. after submitting) comes back to the same tab.
+  window.__wolvesTab = function(name, btn) {{
+    var bar = btn.closest('.tab-bar');
+    if (bar) bar.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+    btn.classList.add('active');
+    document.querySelectorAll('.tab-panel').forEach(function(p) {{
+      p.classList.toggle('active', p.id === 'tab-' + name);
+    }});
+    if (window.__wolvesVibrate) window.__wolvesVibrate(8);
+    try {{ sessionStorage.setItem('wolvesActiveTab', name); }} catch (e) {{}}
+  }};
+  (function restoreTab() {{
+    try {{
+      var saved = sessionStorage.getItem('wolvesActiveTab');
+      var btn = saved && document.querySelector('.tab-btn[data-tab="' + saved + '"]');
+      if (btn) window.__wolvesTab(saved, btn);
+    }} catch (e) {{}}
+  }})();
 
   window.__wolvesFileChange = function(input) {{
     var label = input.closest('.file-drop');
@@ -624,27 +689,84 @@ def render_stats_row(days_left: int, compliant: int, total_members: int) -> str:
     """
 
 
-_MINI_MEDALS = ["🥇", "🥈", "🥉"]
+_BOARD_MEDALS = ["🥇", "🥈", "🥉"]
 
 
-def render_leaderboard_mini(ranked: list, start=None, end=None) -> str:
+def render_board_list(ranked: list, limit: int = 10) -> str:
     if not ranked:
-        return ""
-    week_range = f" <span class='week-range'>({start.strftime('%b %-d')}–{end.strftime('%b %-d')})</span>" if start and end else ""
-    rows = "".join(
-        f"""<li>
-              <span class="medal">{_MINI_MEDALS[i] if i < len(_MINI_MEDALS) else '▫️'}</span>
-              <span class="donor-name">{html.escape(name)}</span>
-              <span class="donor-total">{fmt_num(total)}</span>
-            </li>"""
-        for i, (name, total) in enumerate(ranked[:3])
-    )
+        return '<div class="empty-state">No donations logged yet for this period — be the first! 🎉</div>'
+    rows = []
+    for i, (name, total) in enumerate(ranked[:limit]):
+        rank_display = _BOARD_MEDALS[i] if i < len(_BOARD_MEDALS) else f"#{i + 1}"
+        rows.append(
+            f'<li><span class="rank">{rank_display}</span>'
+            f'<span class="donor-name">{html.escape(name)}</span>'
+            f'<span class="donor-total">{fmt_num(total)}</span></li>'
+        )
+    return f'<ul class="board-list">{"".join(rows)}</ul>'
+
+
+def render_weekly_tab(ranked: list, start=None, end=None) -> str:
+    week_range = f"{start.strftime('%b %-d')} – {end.strftime('%b %-d')}" if start and end else "this week"
     return f"""
-      <div class="mini-board">
-        <h2>🏆 Top Donors This Week{week_range}</h2>
-        <ol>{rows}</ol>
-      </div>
+      <h2>🏆 This Week's Top Donors</h2>
+      <p class="note" style="margin-top:-6px;">{week_range}</p>
+      {render_board_list(ranked)}
     """
+
+
+def render_all_time_tab(ranked: list) -> str:
+    return f"""
+      <h2>👑 All-Time Hall of Fame</h2>
+      <p class="note" style="margin-top:-6px;">Every donation ever logged for this alliance.</p>
+      {render_board_list(ranked)}
+    """
+
+
+def render_compliance_tab(compliant_names: list, total_members: int, minimum: int) -> str:
+    if not total_members:
+        return """
+          <h2>🧮 Weekly Compliance</h2>
+          <div class="empty-state">No alliance members are registered yet.</div>
+        """
+    pct = (len(compliant_names) / total_members) * 100
+    remaining = total_members - len(compliant_names)
+    if remaining == 0:
+        note = "Everyone has hit this week's minimum already — incredible work, WOLVES! 🎉"
+    else:
+        note = (
+            f"<b>{remaining}</b> more member{'s' if remaining != 1 else ''} still need"
+            f"{'s' if remaining == 1 else ''} to hit {fmt_num(minimum)} of EACH resource this week."
+        )
+    chips = "".join(f'<span class="compliant-chip">✅ {html.escape(n)}</span>' for n in compliant_names)
+    chips_html = chips or '<p class="note">No one has hit the minimum yet this week — be the first! 🚀</p>'
+    return f"""
+      <h2>🧮 Weekly Compliance</h2>
+      <div class="compliance-hero">
+        <div class="big-ratio">{len(compliant_names)}/{total_members}</div>
+        <div class="big-sub">members have hit this week's 10M-per-resource minimum</div>
+        <div class="compliance-track"><div class="compliance-fill" style="width:{pct:.0f}%"></div></div>
+      </div>
+      <p class="note">{note}</p>
+      <div class="compliant-grid">{chips_html}</div>
+    """
+
+
+def render_tabs(tabs: list) -> str:
+    """`tabs` is a list of (id, label, html_content) tuples. The first tab
+    is active by default; switching is pure client-side JS (see
+    window.__wolvesTab in PAGE_SHELL) -- no page reload, no extra server
+    round trip, since every tab's content is already rendered up front."""
+    buttons = "".join(
+        f'<button type="button" class="tab-btn{" active" if i == 0 else ""}" '
+        f'data-tab="{tab_id}" onclick="window.__wolvesTab(\'{tab_id}\', this)">{html.escape(label)}</button>'
+        for i, (tab_id, label, _content) in enumerate(tabs)
+    )
+    panels = "".join(
+        f'<div class="tab-panel{" active" if i == 0 else ""}" id="tab-{tab_id}">{content}</div>'
+        for i, (tab_id, _label, content) in enumerate(tabs)
+    )
+    return f'<div class="tab-bar">{buttons}</div>{panels}'
 
 
 def _amount_field(label: str, name: str, emoji_chips: list) -> str:
@@ -672,19 +794,19 @@ def render_form(
     top_donors: list = None,
     week_start=None,
     week_end=None,
+    all_time_donors: list = None,
+    compliant_names: list = None,
 ) -> str:
     display_name = html.escape(payload.get("n", "Donor"))
     bank_name = html.escape(payload.get("bank", "the alliance bank"))
     error_html = f'<div class="error">⚠️ {html.escape(error)}</div>' if error else ""
     stats_html = render_stats_row(days_left, compliant, total_members)
-    leaderboard_html = render_leaderboard_mini(top_donors or [], week_start, week_end)
     quick_amounts = [("10M", 10_000_000), ("25M", 25_000_000), ("50M", 50_000_000)]
-    body = f"""
+    donate_panel = f"""
       <span class="pill">Donating as {display_name}</span>
       <h1><span class="wolf">🐺</span>Alliance Bank Donation</h1>
       <p class="sub">Follow the steps below, then log exactly what you sent.</p>
       {stats_html}
-      {leaderboard_html}
       <h2>How it works</h2>
       <ol>
         <li>In-game, go to <b>Alliance &rarr; Assistance</b> and send the resources
@@ -725,6 +847,16 @@ def render_form(
       again in Discord for a fresh one.</p>
       <a class="btn-link" href="/ticket?token={html.escape(token)}">🎫 Something not working? Get help</a>
     """
+
+    tabs = [
+        ("donate", "🐺 Donate", donate_panel),
+        ("week", "🏆 This Week", render_weekly_tab(top_donors or [], week_start, week_end)),
+        ("alltime", "👑 All-Time", render_all_time_tab(all_time_donors or [])),
+        ("compliance", "🧮 Compliance", render_compliance_tab(
+            compliant_names or [], total_members or 0, WEEKLY_MINIMUM_PER_RESOURCE
+        )),
+    ]
+    body = render_tabs(tabs)
     return render_page(
         "Donate — WOLVES Alliance Bank",
         body,
@@ -1115,41 +1247,89 @@ async def handle_ticket_submit(request: web.Request):
 
 
 async def _get_week_stats(guild_id) -> dict:
-    """Live countdown + weekly compliance numbers for the donation form,
-    computed with the exact same Saturday-aligned week window the bot's
-    DONATION GUIDE post uses (see sheets.current_week_window). Returns a
-    dict with days_left/compliant/total_members all None on any failure
-    (e.g. sheet briefly unreachable) so the page still renders fine without
-    the widget rather than erroring out."""
+    """Live countdown, weekly compliance, and leaderboard data for the
+    donation form's tabs, computed with the exact same Saturday-aligned
+    week window the bot's DONATION GUIDE post uses (see
+    sheets.current_week_window). The three sheet reads that don't depend
+    on each other (compliance, this week's board, all-time board) run
+    concurrently to keep page load snappy. Returns a dict with every value
+    defaulted to empty/None on failure (e.g. sheet briefly unreachable) so
+    the page still renders fine, just without that tab's data."""
+    empty = {
+        "days_left": None, "compliant": None, "total_members": None,
+        "start": None, "end": None, "top_donors": [], "all_time_donors": [], "compliant_names": [],
+    }
     try:
         start, end = sheets.current_week_window()
         config = await server_config.get_config(guild_id)
-        compliant, total_members = await sheets.get_weekly_compliance(
-            config["donations_sheet_id"],
-            start,
-            end,
-            donations_tab_name=config["donations_tab_name"],
-            members_tab_name=config["alliance_members_tab_name"],
-            minimum=WEEKLY_MINIMUM_PER_RESOURCE,
+
+        compliance_detail, top_donors, all_time_donors = await asyncio.gather(
+            sheets.get_weekly_compliance_detail(
+                config["donations_sheet_id"], start, end,
+                donations_tab_name=config["donations_tab_name"],
+                members_tab_name=config["alliance_members_tab_name"],
+                minimum=WEEKLY_MINIMUM_PER_RESOURCE,
+            ),
+            sheets.get_weekly_top_donors(
+                config["donations_sheet_id"], start, end,
+                donations_tab_name=config["donations_tab_name"], limit=10,
+            ),
+            sheets.get_top_donors(
+                config["donations_sheet_id"],
+                summary_tab_name=config.get("donation_summary_tab_name", DONATION_SUMMARY_TAB_NAME),
+                limit=10,
+            ),
+            return_exceptions=True,
         )
-        top_donors = await sheets.get_weekly_top_donors(
-            config["donations_sheet_id"], start, end,
-            donations_tab_name=config["donations_tab_name"], limit=3,
-        )
+
+        if isinstance(compliance_detail, Exception):
+            print(f"[webapp] compliance tab unavailable: {compliance_detail!r}")
+            compliant_names, total_members = [], None
+        else:
+            compliant_names, total_members = compliance_detail
+
+        if isinstance(top_donors, Exception):
+            print(f"[webapp] weekly leaderboard tab unavailable: {top_donors!r}")
+            top_donors = []
+
+        if isinstance(all_time_donors, Exception):
+            print(f"[webapp] all-time leaderboard tab unavailable: {all_time_donors!r}")
+            all_time_donors = []
+
         return {
             "days_left": sheets.days_until_reset(),
-            "compliant": compliant,
+            "compliant": len(compliant_names),
             "total_members": total_members,
             "start": start,
             "end": end,
             "top_donors": top_donors,
+            "all_time_donors": all_time_donors,
+            "compliant_names": compliant_names,
         }
     except Exception as e:
         print(f"[webapp] couldn't load weekly stats: {e!r}")
-        return {
-            "days_left": None, "compliant": None, "total_members": None,
-            "start": None, "end": None, "top_donors": [],
-        }
+        return empty
+
+
+def _demo_week_stats() -> dict:
+    """Fun, static sample numbers for /demo links -- no real sheet is ever
+    touched for a demo session, so every tab still needs something
+    plausible to show."""
+    start, end = sheets.current_week_window()
+    weekly = [
+        ("vanilla eve", 84_000_000.0), ("Hecate83", 20_000_000.0), ("Quackyz", 44.0),
+        ("Wren", 12_500_000.0), ("Ser Roderick", 9_000_000.0),
+    ]
+    return {
+        "days_left": 6, "compliant": 2, "total_members": 122,
+        "start": start, "end": end,
+        "top_donors": weekly,
+        "all_time_donors": [
+            ("vanilla eve", 612_000_000.0), ("Hecate83", 340_500_000.0), ("Wren", 198_200_000.0),
+            ("Ser Roderick", 150_000_000.0), ("Quackyz", 88_400_000.0),
+        ],
+        "compliant_names": ["vanilla eve", "Hecate83"],
+    }
 
 
 async def handle_root(request: web.Request):
@@ -1195,22 +1375,14 @@ async def handle_donate_get(request: web.Request):
     if not payload:
         return web.Response(text=render_error("This link is invalid or has expired."), content_type="text/html")
 
-    if demo:
-        # Fun, static sample numbers -- no real sheet is touched for demo links.
-        start, end = sheets.current_week_window()
-        stats = {
-            "days_left": 6, "compliant": 42, "total_members": 122,
-            "start": start, "end": end,
-            "top_donors": [("vanilla eve", 84_000_000.0), ("Hecate83", 20_000_000.0), ("Quackyz", 44.0)],
-        }
-    else:
-        stats = await _get_week_stats(payload.get("g"))
+    stats = _demo_week_stats() if demo else await _get_week_stats(payload.get("g"))
 
     return web.Response(
         text=render_form(
             payload, demo, token,
             days_left=stats["days_left"], compliant=stats["compliant"], total_members=stats["total_members"],
             top_donors=stats.get("top_donors"), week_start=stats.get("start"), week_end=stats.get("end"),
+            all_time_donors=stats.get("all_time_donors"), compliant_names=stats.get("compliant_names"),
         ),
         content_type="text/html",
     )
@@ -1247,20 +1419,13 @@ async def handle_donate_submit(request: web.Request):
             if not donated
             else "Please attach your Assistance Report screenshot."
         )
-        if demo:
-            start, end = sheets.current_week_window()
-            stats = {
-                "days_left": 6, "compliant": 42, "total_members": 122,
-                "start": start, "end": end,
-                "top_donors": [("vanilla eve", 84_000_000.0), ("Hecate83", 20_000_000.0), ("Quackyz", 44.0)],
-            }
-        else:
-            stats = await _get_week_stats(payload.get("g"))
+        stats = _demo_week_stats() if demo else await _get_week_stats(payload.get("g"))
         return web.Response(
             text=render_form(
                 payload, demo, token, error=error,
                 days_left=stats["days_left"], compliant=stats["compliant"], total_members=stats["total_members"],
                 top_donors=stats.get("top_donors"), week_start=stats.get("start"), week_end=stats.get("end"),
+                all_time_donors=stats.get("all_time_donors"), compliant_names=stats.get("compliant_names"),
             ),
             content_type="text/html",
         )
