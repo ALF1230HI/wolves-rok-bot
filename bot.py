@@ -630,6 +630,13 @@ async def post_ai_ticket_response(thread, issue: str, opener_id: int, images: li
     else:
         ai_embed.set_footer(text="Looping in a human for this one.")
         await thread.send(embed=ai_embed)
+        # The AI isn't confident it can help further -- stop it from
+        # replying to any more of the opener's messages in this thread so
+        # it doesn't keep talking after a human's already been asked to
+        # step in. (The opener can still type; a human/staff member just
+        # needs to pick it up from here, same as if they'd clicked
+        # "Still need help?".)
+        ai_helper.pause_session(thread.id)
         if ai_helper.should_ping_human(thread.id):
             await thread.send(
                 f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
@@ -788,6 +795,9 @@ async def on_message(message: discord.Message):
     else:
         ai_embed.set_footer(text="Looping in a human for this one.")
         await thread.send(embed=ai_embed)
+        # Same as the initial-response path: stop the AI from replying
+        # further once it's decided a human needs to look at this.
+        ai_helper.pause_session(thread.id)
         if ai_helper.should_ping_human(thread.id):
             await thread.send(
                 f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"

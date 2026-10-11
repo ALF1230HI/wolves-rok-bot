@@ -491,6 +491,12 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
                 text = await resp.text()
                 print(f"[webapp] posting AI ticket response failed ({resp.status}): {text}")
 
+        if not ai_result["confident"]:
+            # Stop the AI from replying to any more of the opener's
+            # messages in this thread now that a human needs to look at
+            # it -- same behavior as the in-Discord /ticket path.
+            ai_helper.pause_session(thread_id)
+
         if not ai_result["confident"] and ai_helper.should_ping_human(thread_id):
             async with session.post(
                 f"{DISCORD_API}/channels/{thread_id}/messages",
