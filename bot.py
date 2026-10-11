@@ -22,7 +22,7 @@ import aiohttp
 from aiohttp import web as aiohttp_web
 from discord import app_commands
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from typing import Union
 from dotenv import load_dotenv
@@ -457,7 +457,12 @@ async def handle_donate_guide_button(interaction: discord.Interaction):
 DONATION_GUIDE_THREAD_ID = int(os.getenv("DONATION_GUIDE_THREAD_ID", "1558878159661834292"))
 DONATION_SUMMARY_TAB_NAME = os.getenv("DONATION_SUMMARY_TAB_NAME", "Donation Summary")
 LEADERBOARD_FIELD_PREFIX = "🏆 Top Donors"
-LEADERBOARD_REFRESH_MINUTES = 10
+# The weekly leaderboard resets every Saturday at noon UK time, in line with
+# the alliance's 10M-per-resource weekly minimum. ZoneInfo (not a fixed UTC
+# offset) so this stays correct across the UK's BST/GMT clock changes.
+LEADERBOARD_TIMEZONE = ZoneInfo("Europe/London")
+LEADERBOARD_RUN_TIME = dt_time(hour=12, minute=0, tzinfo=LEADERBOARD_TIMEZONE)
+LEADERBOARD_WEEKDAY = 5  # Monday=0 ... Saturday=5
 
 _MEDALS = ["🥇", "🥈", "🥉", "🏅", "🏅", "🏅", "🏅", "🏅", "🏅", "🏅"]
 
@@ -472,14 +477,30 @@ def _format_leaderboard(ranked: list) -> str:
     return "\n".join(lines)
 
 
-@tasks.loop(minutes=LEADERBOARD_REFRESH_MINUTES)
+def _current_leaderboard_week(today=None) -> tuple:
+    """Returns (start_date, end_date, field_name) for the 7-day window
+    ending "today" (inclusive) -- i.e. the week that's wrapping up right
+    now, Saturday-to-Saturday. `today` is injectable for testing."""
+    if today is None:
+        today = datetime.now(LEADERBOARD_TIMEZONE).date()
+    start = today - timedelta(days=6)
+    field_name = f"{LEADERBOARD_FIELD_PREFIX} This Week ({start.strftime('%b %-d')} – {today.strftime('%b %-d')})"
+    return start, today, field_name
+
+
+@tasks.loop(time=LEADERBOARD_RUN_TIME)
 async def refresh_donation_leaderboard():
-    """Keeps the DONATION GUIDE post's '🏆 Top Donors' field current by
-    re-reading the alliance's Donation Summary sheet every
-    LEADERBOARD_REFRESH_MINUTES and editing it in place. Only touches that
-    one field -- the banner, steps, and example screenshot embeds are left
-    exactly as they are, and no files are re-uploaded (their CDN URLs stay
-    valid once attached, so a plain text edit is all this needs)."""
+    """Keeps the DONATION GUIDE post's '🏆 Top Donors' field current. Runs
+    once a day at LEADERBOARD_RUN_TIME but only actually does anything on
+    Saturdays, resetting the leaderboard to that week's donations (rather
+    than an all-time total) each time. Only touches that one field -- the
+    banner, steps, and example screenshot embeds are left exactly as they
+    are, and no files are re-uploaded (images are served from our own
+    domain now, not Discord attachments, so a plain text/field edit is all
+    this needs -- see the /assets/ static route in webapp.py)."""
+    now_local = datetime.now(LEADERBOARD_TIMEZONE)
+    if now_local.weekday() != LEADERBOARD_WEEKDAY:
+        return
     try:
         channel = bot.get_channel(DONATION_GUIDE_THREAD_ID)
         if channel is None:
@@ -492,8 +513,12 @@ async def refresh_donation_leaderboard():
 
         guild_id = channel.guild.id if getattr(channel, "guild", None) else GUILD_ID
         config = await server_config.get_config(guild_id)
-        ranked = await sheets.get_top_donors(
-            config["donations_sheet_id"], summary_tab_name=DONATION_SUMMARY_TAB_NAME
+        start_date, end_date, field_name = _current_leaderboard_week(now_local.date())
+        ranked = await sheets.get_weekly_top_donors(
+            config["donations_sheet_id"],
+            start_date,
+            end_date,
+            donations_tab_name=config["donations_tab_name"],
         )
         leaderboard_text = _format_leaderboard(ranked)
 
@@ -501,12 +526,12 @@ async def refresh_donation_leaderboard():
         for embed in embeds:
             for i, field in enumerate(embed.fields or []):
                 if field.name and field.name.startswith(LEADERBOARD_FIELD_PREFIX):
-                    embed.set_field_at(i, name=field.name, value=leaderboard_text, inline=field.inline)
+                    embed.set_field_at(i, name=field_name, value=leaderboard_text, inline=field.inline)
                     updated = True
 
         if updated:
             await message.edit(embeds=embeds)
-            print(f"[donation-guide] leaderboard refreshed ({len(ranked)} donor(s))")
+            print(f"[donation-guide] weekly leaderboard reset for {start_date}–{end_date} ({len(ranked)} donor(s))")
     except Exception as e:
         print(f"[donation-guide] failed to refresh leaderboard: {e!r}")
 
@@ -514,6 +539,7 @@ async def refresh_donation_leaderboard():
 @refresh_donation_leaderboard.before_loop
 async def _before_refresh_donation_leaderboard():
     await bot.wait_until_ready()
+
 
 
 @bot.tree.command(name="donate", description="Get your personal link to log a donation to the alliance bank")

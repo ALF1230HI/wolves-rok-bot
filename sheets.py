@@ -146,6 +146,65 @@ async def get_top_donors(sheet_id: str, summary_tab_name: str = "Donation Summar
     return await asyncio.to_thread(_get_top_donors_sync, sheet_id, summary_tab_name, limit)
 
 
+def _get_weekly_top_donors_sync(
+    sheet_id: str, donations_tab_name: str, start_date, end_date, limit: int
+):
+    client = _get_client()
+    sheet = client.open_by_key(sheet_id)
+    ws = sheet.worksheet(donations_tab_name)
+    rows = ws.get_all_values()[1:]  # skip header (Date | Alliance Member | Food | Wood | Stone | Gold)
+
+    def parse_number(value: str) -> float:
+        try:
+            return float(str(value).replace(",", "").strip() or 0)
+        except (ValueError, AttributeError):
+            return 0.0
+
+    # Keyed by lowercased name so e.g. "Wren" and "wren" are merged into one
+    # donor instead of splitting their total across two leaderboard rows
+    # (mirrors the case-insensitive matching _ensure_member_exists_sync
+    # already does). The display name shown is whichever casing was seen
+    # first in the sheet.
+    totals: dict[str, float] = {}
+    display_names: dict[str, str] = {}
+    for row in rows:
+        if not row or not row[0].strip() or len(row) < 2 or not row[1].strip():
+            continue
+        try:
+            row_date = datetime.strptime(row[0].strip(), "%m/%d/%y").date()
+        except ValueError:
+            continue  # skip rows with an unparseable/blank date rather than crash the whole report
+        if not (start_date <= row_date <= end_date):
+            continue
+
+        name = row[1].strip()
+        key = name.lower()
+        display_names.setdefault(key, name)
+        row_total = sum(parse_number(v) for v in row[2:6])
+        totals[key] = totals.get(key, 0.0) + row_total
+
+    ranked = sorted(
+        ((display_names[key], total) for key, total in totals.items()),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
+async def get_weekly_top_donors(
+    sheet_id: str, start_date, end_date, donations_tab_name: str = "Donations", limit: int = 5
+):
+    """Returns the top `limit` donors for the [start_date, end_date] window
+    (inclusive), summing each donor's Food+Wood+Stone+Gold across every row
+    of the raw "Donations" tab that falls in that range. Used for the
+    DONATION GUIDE's weekly leaderboard, which resets every Saturday rather
+    than showing an all-time total. Runs the blocking Sheets API call in a
+    background thread so it doesn't stall the bot's event loop."""
+    return await asyncio.to_thread(
+        _get_weekly_top_donors_sync, sheet_id, donations_tab_name, start_date, end_date, limit
+    )
+
+
 async def append_donation(
     display_name: str,
     resources: dict,
