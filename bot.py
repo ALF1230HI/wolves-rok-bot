@@ -267,6 +267,8 @@ async def on_interaction(interaction: discord.Interaction):
             await handle_escalate_button(interaction)
         elif custom_id.startswith("close_ticket:"):
             await handle_close_button(interaction)
+        elif custom_id.startswith("donate_guide:"):
+            await handle_donate_guide_button(interaction)
 
 
 async def handle_escalate_button(interaction: discord.Interaction):
@@ -393,29 +395,16 @@ async def shop(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="donate", description="Get your personal link to log a donation to the alliance bank")
-async def donate(interaction: discord.Interaction):
-    if not WEBSITE_BASE_URL:
-        await interaction.response.send_message(
-            "⚠️ The donation website isn't configured yet (missing `WEBSITE_BASE_URL`). Contact the bot operator.",
-            ephemeral=True,
-        )
-        return
-
-    # Defer immediately: server_config.get_config() below can hit the Google
-    # Sheets API, which can easily take longer than Discord's 3-second
-    # response window, especially on a cold call. Deferring first (like the
-    # old /donate did before its sheets.append_donation() call) buys up to
-    # 15 minutes instead, avoiding the "Unknown interaction" / "The
-    # application did not respond" error from an expired interaction token.
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    config = await server_config.get_config(interaction.guild_id)
+async def _build_donate_link_response(guild_id: int, channel_id: int, user_id: int, display_name: str):
+    """Shared by the /donate slash command and the 'Get My Donation Link'
+    button on the DONATION GUIDE post -- builds the personal, 30-minute
+    donation link embed + button for whoever asked for one."""
+    config = await server_config.get_config(guild_id)
     token = donate_token.generate_token({
-        "g": interaction.guild_id,
-        "c": interaction.channel_id,
-        "u": interaction.user.id,
-        "n": interaction.user.display_name,
+        "g": guild_id,
+        "c": channel_id,
+        "u": user_id,
+        "n": display_name,
         "bank": config["bank_name"],
     })
     link = f"{WEBSITE_BASE_URL}/donate?token={token}"
@@ -434,6 +423,49 @@ async def donate(interaction: discord.Interaction):
     view = discord.ui.View()
     view.add_item(
         discord.ui.Button(label="Open Donation Form", style=discord.ButtonStyle.link, url=link, emoji="📝")
+    )
+    return embed, view
+
+
+async def handle_donate_guide_button(interaction: discord.Interaction):
+    """Handles clicks on the '📝 Get My Donation Link' button on the
+    DONATION GUIDE forum post. Matches purely on the custom_id string (no
+    registered View needed), so it keeps working across bot restarts and
+    regardless of whether the message was posted by this process's
+    discord.py Client or via a raw REST call."""
+    if not WEBSITE_BASE_URL:
+        await interaction.response.send_message(
+            "⚠️ The donation website isn't configured yet (missing `WEBSITE_BASE_URL`). Contact the bot operator.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    embed, view = await _build_donate_link_response(
+        interaction.guild_id, interaction.channel_id, interaction.user.id, interaction.user.display_name
+    )
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+@bot.tree.command(name="donate", description="Get your personal link to log a donation to the alliance bank")
+async def donate(interaction: discord.Interaction):
+    if not WEBSITE_BASE_URL:
+        await interaction.response.send_message(
+            "⚠️ The donation website isn't configured yet (missing `WEBSITE_BASE_URL`). Contact the bot operator.",
+            ephemeral=True,
+        )
+        return
+
+    # Defer immediately: server_config.get_config() below can hit the Google
+    # Sheets API, which can easily take longer than Discord's 3-second
+    # response window, especially on a cold call. Deferring first (like the
+    # old /donate did before its sheets.append_donation() call) buys up to
+    # 15 minutes instead, avoiding the "Unknown interaction" / "The
+    # application did not respond" error from an expired interaction token.
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    embed, view = await _build_donate_link_response(
+        interaction.guild_id, interaction.channel_id, interaction.user.id, interaction.user.display_name
     )
 
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
