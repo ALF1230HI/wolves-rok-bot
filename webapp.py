@@ -429,7 +429,7 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
             # that creates them -- there's no separate "type" for private
             # forum posts, so this post's visibility is whatever the forum
             # channel's own permissions allow.
-            body = {"name": thread_name, "message": {"embeds": [embed]}}
+            body = {"name": thread_name, "message": {"content": ai_helper.escalate_mention(), "embeds": [embed]}}
         else:
             body = {"name": thread_name, "type": 12, "auto_archive_duration": 1440}
 
@@ -454,7 +454,9 @@ async def create_support_ticket(tickets_channel_id: int, user_id: int, display_n
             # Text-channel private threads start empty -- post the embed as
             # their first message. Forum posts already got it above.
             async with session.post(
-                f"{DISCORD_API}/channels/{thread_id}/messages", json={"embeds": [embed]}, headers=headers
+                f"{DISCORD_API}/channels/{thread_id}/messages",
+                json={"content": ai_helper.escalate_mention(), "embeds": [embed]},
+                headers=headers,
             ) as resp:
                 if resp.status >= 300:
                     text = await resp.text()

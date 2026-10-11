@@ -599,6 +599,7 @@ async def ticket(interaction: discord.Interaction, issue: str, screenshot: disco
             # normal forum post, with the embed as its starter message.
             thread_with_message = await channel.create_thread(
                 name=thread_name,
+                content=ai_helper.escalate_mention(),
                 embed=embed,
                 reason=f"Support ticket opened by {interaction.user}",
             )
@@ -610,7 +611,7 @@ async def ticket(interaction: discord.Interaction, issue: str, screenshot: disco
                 auto_archive_duration=1440,
                 reason=f"Support ticket opened by {interaction.user}",
             )
-            await thread.send(embed=embed)
+            await thread.send(content=ai_helper.escalate_mention(), embed=embed)
         await thread.add_user(interaction.user)
     except discord.Forbidden:
         print(f"[ticket] missing permissions to create a ticket in #{channel}")
