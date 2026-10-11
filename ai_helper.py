@@ -120,8 +120,28 @@ help -- e.g. confirm whether a screenshot looks like a valid Assistance Report e
 error message in it, or spot what's wrong on the page. If an image doesn't show what's needed, \
 say specifically what to send instead.
 
-Write a short, friendly reply (3-6 sentences, plain text, no markdown headers) using the \
-conversation so far for context so you don't repeat yourself turn over turn.
+Whenever your reply includes a step-by-step walkthrough (this includes every time you give the \
+/donate guide), you MUST format the steps as a numbered list, written EXACTLY like this -- each \
+step is its own number, and there is a blank line between every step:
+
+1. <first step>
+
+2. <second step>
+
+3. <third step>
+
+4. <fourth step>
+
+Use as many numbered steps as the guide actually needs. Do not merge steps into one paragraph, \
+and do not use markdown bullets, asterisks, or bold -- plain numbered lines only, separated by \
+blank lines exactly like the example above. You may add one short friendly sentence before the \
+list (e.g. a greeting) and one short friendly sentence after it (e.g. asking them to try it and \
+report back), but the steps themselves must always be that exact numbered-list format, never \
+prose.
+
+If your reply is NOT a step-by-step walkthrough (e.g. a single specific fix, or a clarifying \
+question), just write a short, friendly reply (3-6 sentences, plain text, no markdown headers) \
+using the conversation so far for context so you don't repeat yourself turn over turn.
 
 Respond with ONLY valid JSON in this exact shape:
 {"reply": "<your reply text>", "confident": true or false}"""
