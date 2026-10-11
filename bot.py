@@ -667,6 +667,18 @@ async def _bootstrap_ticket_session(thread):
                             history.append(("user", e.description))
                     elif "Automated Suggestion" in label and e.description:
                         history.append(("model", e.description))
+                        footer_text = (e.footer.text if e.footer else None) or ""
+                        if "Looping in a human" in footer_text:
+                            # The AI already gave up on this reply and asked
+                            # for a human -- it should stay paused even if
+                            # memory was lost before anyone typed again.
+                            other_human_spoke = True
+                if not m.embeds and m.content and f"<@{ai_helper.HUMAN_HELPER_USER_ID}>" in m.content:
+                    # One of the bot's own escalation pings (from the
+                    # "Still need help?" button or an automatic
+                    # not-confident reply) -- also means this ticket was
+                    # already handed off and should stay paused.
+                    other_human_spoke = True
             elif not m.author.bot:
                 if opener_id is None:
                     opener_id = m.author.id
