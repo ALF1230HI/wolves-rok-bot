@@ -21,7 +21,7 @@ import discord
 import aiohttp
 from aiohttp import web as aiohttp_web
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Union
@@ -304,6 +304,9 @@ async def on_ready():
         _web_server_started = True
         bot.loop.create_task(start_web_server())
 
+    if not refresh_donation_leaderboard.is_running():
+        refresh_donation_leaderboard.start()
+
     try:
         if GUILD_IDS:
             total = 0
@@ -445,6 +448,72 @@ async def handle_donate_guide_button(interaction: discord.Interaction):
         interaction.guild_id, interaction.channel_id, interaction.user.id, interaction.user.display_name
     )
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+# The DONATION GUIDE forum post's starter message -- for a forum post, the
+# starter message's ID is the same as the thread's ID. Lets the leaderboard
+# refresh loop below find and edit it without needing the post re-created
+# through the bot. Override via env var if the post is ever recreated.
+DONATION_GUIDE_THREAD_ID = int(os.getenv("DONATION_GUIDE_THREAD_ID", "1558878159661834292"))
+DONATION_SUMMARY_TAB_NAME = os.getenv("DONATION_SUMMARY_TAB_NAME", "Donation Summary")
+LEADERBOARD_FIELD_PREFIX = "🏆 Top Donors"
+LEADERBOARD_REFRESH_MINUTES = 10
+
+_MEDALS = ["🥇", "🥈", "🥉", "🏅", "🏅", "🏅", "🏅", "🏅", "🏅", "🏅"]
+
+
+def _format_leaderboard(ranked: list) -> str:
+    if not ranked:
+        return "No donations logged yet — be the first! 🎉"
+    lines = []
+    for i, (name, total) in enumerate(ranked):
+        medal = _MEDALS[i] if i < len(_MEDALS) else "▫️"
+        lines.append(f"{medal} **{name}** — {total:,.0f}")
+    return "\n".join(lines)
+
+
+@tasks.loop(minutes=LEADERBOARD_REFRESH_MINUTES)
+async def refresh_donation_leaderboard():
+    """Keeps the DONATION GUIDE post's '🏆 Top Donors' field current by
+    re-reading the alliance's Donation Summary sheet every
+    LEADERBOARD_REFRESH_MINUTES and editing it in place. Only touches that
+    one field -- the banner, steps, and example screenshot embeds are left
+    exactly as they are, and no files are re-uploaded (their CDN URLs stay
+    valid once attached, so a plain text edit is all this needs)."""
+    try:
+        channel = bot.get_channel(DONATION_GUIDE_THREAD_ID)
+        if channel is None:
+            channel = await bot.fetch_channel(DONATION_GUIDE_THREAD_ID)
+        message = await channel.fetch_message(DONATION_GUIDE_THREAD_ID)
+
+        embeds = message.embeds
+        if not embeds:
+            return
+
+        guild_id = channel.guild.id if getattr(channel, "guild", None) else GUILD_ID
+        config = await server_config.get_config(guild_id)
+        ranked = await sheets.get_top_donors(
+            config["donations_sheet_id"], summary_tab_name=DONATION_SUMMARY_TAB_NAME
+        )
+        leaderboard_text = _format_leaderboard(ranked)
+
+        updated = False
+        for embed in embeds:
+            for i, field in enumerate(embed.fields or []):
+                if field.name and field.name.startswith(LEADERBOARD_FIELD_PREFIX):
+                    embed.set_field_at(i, name=field.name, value=leaderboard_text, inline=field.inline)
+                    updated = True
+
+        if updated:
+            await message.edit(embeds=embeds)
+            print(f"[donation-guide] leaderboard refreshed ({len(ranked)} donor(s))")
+    except Exception as e:
+        print(f"[donation-guide] failed to refresh leaderboard: {e!r}")
+
+
+@refresh_donation_leaderboard.before_loop
+async def _before_refresh_donation_leaderboard():
+    await bot.wait_until_ready()
 
 
 @bot.tree.command(name="donate", description="Get your personal link to log a donation to the alliance bank")

@@ -110,6 +110,42 @@ def _append_donation_sync(
     worksheet.append_row(row, value_input_option="USER_ENTERED")
 
 
+def _get_top_donors_sync(sheet_id: str, summary_tab_name: str, limit: int):
+    client = _get_client()
+    sheet = client.open_by_key(sheet_id)
+    ws = sheet.worksheet(summary_tab_name)
+    rows = ws.get_all_values()[1:]  # skip header row (Donor | Total | Food | Wood | Stone | Gold)
+
+    def parse_number(value: str) -> float:
+        try:
+            return float(str(value).replace(",", "").strip() or 0)
+        except (ValueError, AttributeError):
+            return 0.0
+
+    totals: dict[str, float] = {}
+    for row in rows:
+        if not row or not row[0].strip():
+            continue
+        name = row[0].strip()
+        total = parse_number(row[1]) if len(row) > 1 else 0.0
+        # Some sheets end up with a member listed more than once (e.g. a
+        # rename) -- keep whichever total is higher rather than showing
+        # duplicate rows for the same person.
+        totals[name] = max(totals.get(name, 0.0), total)
+
+    ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+    return ranked[:limit]
+
+
+async def get_top_donors(sheet_id: str, summary_tab_name: str = "Donation Summary", limit: int = 5):
+    """Returns the top `limit` donors as a list of (name, total) tuples,
+    read from the sheet's "Donation Summary" tab (which already totals each
+    member's donations via SUMIF formulas -- see _ensure_member_exists_sync).
+    Runs the blocking Google Sheets API call in a background thread so it
+    doesn't stall the bot's event loop."""
+    return await asyncio.to_thread(_get_top_donors_sync, sheet_id, summary_tab_name, limit)
+
+
 async def append_donation(
     display_name: str,
     resources: dict,
