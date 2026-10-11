@@ -62,6 +62,13 @@ _ticket_role_ids_raw = os.getenv(
 )
 TICKET_VISIBLE_ROLE_IDS = [int(r.strip()) for r in _ticket_role_ids_raw.split(",") if r.strip()]
 
+# Every post opened in a forum-type tickets channel gets this tag applied
+# automatically (created on the forum the first time it's needed if it
+# doesn't already exist) -- covers posts made via /ticket, the donation
+# site's "Get Help" button, and posts members open directly in Discord
+# themselves, since all three ultimately show up as a THREAD_CREATE event.
+DONATION_HELP_TAG_NAME = os.getenv("DONATION_HELP_TAG_NAME", "Donation Help")
+
 # /announce posts into the announcement channel belonging to whichever server
 # the command was run in. Add an entry here for every server the bot is in.
 ANNOUNCE_CHANNELS = {
@@ -835,6 +842,7 @@ async def ticket(interaction: discord.Interaction, issue: str, screenshot: disco
                 reason=f"Support ticket opened by {interaction.user}",
             )
             thread = thread_with_message.thread
+            await _apply_donation_help_tag(thread)
         else:
             thread = await channel.create_thread(
                 name=thread_name,
@@ -944,6 +952,74 @@ async def _ensure_ticket_role_access(channel):
             )
         except Exception as e:
             print(f"[ticket] couldn't grant role {role_id} access to #{channel}: {e!r}")
+
+
+async def _ensure_donation_help_tag(forum: discord.ForumChannel):
+    """Returns the forum's "Donation Help" tag, creating it on the forum
+    (via Manage Channels) the first time it's missing. Safe to call
+    repeatedly -- once the tag exists it's just looked up by name each
+    time, no edit is made."""
+    for tag in forum.available_tags:
+        if tag.name.strip().lower() == DONATION_HELP_TAG_NAME.lower():
+            return tag
+    try:
+        return await forum.create_tag(
+            name=DONATION_HELP_TAG_NAME,
+            emoji="💸",
+            moderated=False,
+            reason="Auto-create tag for the tickets/donation-help forum",
+        )
+    except discord.Forbidden:
+        print(
+            f"[ticket] missing Manage Channels permission to create the "
+            f"'{DONATION_HELP_TAG_NAME}' tag on #{forum}"
+        )
+    except Exception as e:
+        print(f"[ticket] couldn't create '{DONATION_HELP_TAG_NAME}' tag on #{forum}: {e!r}")
+    return None
+
+
+async def _apply_donation_help_tag(thread: discord.Thread):
+    """Auto-applies the "Donation Help" tag to a freshly opened forum post,
+    but only inside whichever forum channel is configured as that server's
+    tickets channel -- leaves every other forum (e.g. the DONATION GUIDE
+    forum) untouched. No-ops quietly if the tag can't be created/applied
+    (e.g. missing permissions) so a ticket is never blocked by this."""
+    parent = thread.parent
+    if not isinstance(parent, discord.ForumChannel) or thread.guild is None:
+        return
+    try:
+        config = await server_config.get_config(thread.guild.id)
+    except Exception as e:
+        print(f"[ticket] couldn't load config while auto-tagging thread {thread.id}: {e!r}")
+        return
+    if config.get("tickets_channel_id") != parent.id:
+        return
+
+    tag = await _ensure_donation_help_tag(parent)
+    if tag is None:
+        return
+    if any(t.id == tag.id for t in thread.applied_tags):
+        return  # already tagged (e.g. re-fired event, or applied elsewhere)
+
+    try:
+        await thread.add_tags(tag, reason="Auto-tag: every post in the tickets forum is donation help")
+    except Exception as e:
+        print(f"[ticket] couldn't apply '{DONATION_HELP_TAG_NAME}' tag to thread {thread.id}: {e!r}")
+
+
+@bot.event
+async def on_thread_create(thread: discord.Thread):
+    """Fires for every new thread/forum post created in a guild the bot can
+    see -- including ones opened by the /ticket command, the donation
+    site's "Get Help" button (created via the bot's own REST calls from a
+    separate process), and posts a member opens directly in Discord. Used
+    here purely to auto-tag tickets-forum posts; swallow all errors so a
+    problem here never breaks normal thread creation."""
+    try:
+        await _apply_donation_help_tag(thread)
+    except Exception as e:
+        print(f"[ticket] on_thread_create tagging failed for thread {thread.id}: {e!r}")
 
 
 async def _bootstrap_ticket_session(thread):
