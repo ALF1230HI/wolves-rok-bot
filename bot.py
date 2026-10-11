@@ -48,6 +48,19 @@ GUILD_ID = GUILD_IDS[0] if GUILD_IDS else None  # kept for backwards compatibili
 RED = 0xFF0000
 PAYPAL_EMOJI = "<:paypallogo:1551673165233790996>"  # update with your server's emoji id if different
 
+# Roles that should always be able to see every support ticket, regardless
+# of which channel/server it was opened in. Applied as permission
+# overwrites on the tickets channel itself (not per-ticket membership) so
+# it covers both /ticket's private threads and forum-channel posts, and
+# both tickets opened in Discord and via the website's "Get Help" flow --
+# none of that code needs to know about these roles at all, since it's all
+# enforced at the channel level.
+_ticket_role_ids_raw = os.getenv(
+    "TICKET_VISIBLE_ROLE_IDS",
+    "1549161961923547166,1386444014319833120,1549142554258309242",
+)
+TICKET_VISIBLE_ROLE_IDS = [int(r.strip()) for r in _ticket_role_ids_raw.split(",") if r.strip()]
+
 # /announce posts into the announcement channel belonging to whichever server
 # the command was run in. Add an entry here for every server the bot is in.
 ANNOUNCE_CHANNELS = {
@@ -308,6 +321,25 @@ async def on_ready():
     except Exception as e:
         print(f"Slash command sync failed: {e}")
 
+    # Self-healing: re-assert the configured tickets-visibility roles on
+    # every already-configured tickets channel each time the bot starts,
+    # so this stays correct even if the channel/permissions were touched
+    # manually, without needing anyone to re-run /config.
+    for gid in GUILD_IDS:
+        guild = bot.get_guild(gid)
+        if guild is None:
+            continue
+        try:
+            config = await server_config.get_config(gid)
+            tickets_channel_id = config.get("tickets_channel_id")
+            if not tickets_channel_id:
+                continue
+            channel = guild.get_channel(tickets_channel_id)
+            if channel is not None:
+                await _ensure_ticket_role_access(channel)
+        except Exception as e:
+            print(f"[ticket] couldn't ensure ticket role access for guild {gid}: {e!r}")
+
 
 @bot.tree.command(name="ping", description="Check if the bot is online")
 async def ping(interaction: discord.Interaction):
@@ -485,6 +517,7 @@ async def config(
         updates["announce_channel_id"] = announce_channel.id
     if tickets_channel:
         updates["tickets_channel_id"] = tickets_channel.id
+        await _ensure_ticket_role_access(tickets_channel)
 
     try:
         await server_config.set_config(
@@ -641,6 +674,37 @@ async def post_ai_ticket_response(thread, issue: str, opener_id: int, images: li
             await thread.send(
                 f"{ai_helper.escalate_mention()} — this ticket needs a human look, please take a peek! 🙏"
             )
+
+
+async def _ensure_ticket_role_access(channel):
+    """Grants every role in TICKET_VISIBLE_ROLE_IDS permanent access to a
+    tickets channel: View Channel + Read Message History always, plus
+    Manage Threads for normal text channels specifically, since Discord
+    only shows *private* threads (used for non-forum ticket channels) to
+    users who are either a thread member or hold Manage Threads on the
+    parent channel -- this makes every future ticket visible to these
+    roles without the bot needing to add each member to each thread one
+    by one (which would also require the privileged Members intent).
+    Safe to call repeatedly (e.g. on every bot startup) -- it just
+    (re)asserts the same overwrite each time."""
+    if channel is None or channel.guild is None:
+        return
+    for role_id in TICKET_VISIBLE_ROLE_IDS:
+        role = channel.guild.get_role(role_id)
+        if role is None:
+            print(f"[ticket] role {role_id} not found in guild {channel.guild.id}, skipping")
+            continue
+        try:
+            overwrite = channel.overwrites_for(role)
+            overwrite.view_channel = True
+            overwrite.read_message_history = True
+            if isinstance(channel, discord.TextChannel):
+                overwrite.manage_threads = True
+            await channel.set_permissions(
+                role, overwrite=overwrite, reason="Ensure configured role can always see support tickets"
+            )
+        except Exception as e:
+            print(f"[ticket] couldn't grant role {role_id} access to #{channel}: {e!r}")
 
 
 async def _bootstrap_ticket_session(thread):
