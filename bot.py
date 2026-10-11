@@ -478,14 +478,19 @@ def _format_leaderboard(ranked: list) -> str:
 
 
 def _current_leaderboard_week(today=None) -> tuple:
-    """Returns (start_date, end_date, field_name) for the 7-day window
-    ending "today" (inclusive) -- i.e. the week that's wrapping up right
-    now, Saturday-to-Saturday. `today` is injectable for testing."""
+    """Returns (start_date, end_date, field_name) for the current
+    Saturday-to-Friday week (7 days, aligned to the actual weekly reset
+    cycle -- not just "7 days back from today"). If today is itself a
+    Saturday, that's the first day of a brand new week, so the window
+    starts fresh at 0 and runs through the following Friday. `today` is
+    injectable for testing."""
     if today is None:
         today = datetime.now(LEADERBOARD_TIMEZONE).date()
-    start = today - timedelta(days=6)
-    field_name = f"{LEADERBOARD_FIELD_PREFIX} This Week ({start.strftime('%b %-d')} – {today.strftime('%b %-d')})"
-    return start, today, field_name
+    days_since_saturday = (today.weekday() - LEADERBOARD_WEEKDAY) % 7
+    start = today - timedelta(days=days_since_saturday)
+    end = start + timedelta(days=6)
+    field_name = f"{LEADERBOARD_FIELD_PREFIX} This Week ({start.strftime('%b %-d')} – {end.strftime('%b %-d')})"
+    return start, end, field_name
 
 
 @tasks.loop(time=LEADERBOARD_RUN_TIME)
