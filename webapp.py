@@ -62,12 +62,17 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_API = "https://discord.com/api/v10"
 
 
-def fmt_num(n: int) -> str:
+def fmt_num(n) -> str:
+    """Formats a resource amount with thousands separators and a friendly
+    M/B shorthand. Accepts ints or floats (the weekly-leaderboard sheet
+    reads come back as floats) and always displays a whole number -- a
+    donation amount is never fractional."""
+    n = round(n)
     if n >= 1_000_000_000:
-        return f"{n:,} ({n/1_000_000_000:.2f}B)"
+        return f"{n:,.0f} ({n/1_000_000_000:.2f}B)"
     if n >= 1_000_000:
-        return f"{n:,} ({n/1_000_000:.2f}M)"
-    return f"{n:,}"
+        return f"{n:,.0f} ({n/1_000_000:.2f}M)"
+    return f"{n:,.0f}"
 
 
 PAGE_SHELL = """<!DOCTYPE html>
@@ -260,10 +265,53 @@ PAGE_SHELL = """<!DOCTYPE html>
   }}
   a.btn-link:active {{ background: rgba(255,255,255,0.1); }}
   .error {{ color: #ff8a8a; font-size: 13px; margin-top: 10px; line-height: 1.5; animation: wolvesFadeUp 0.25s ease both; }}
-  #confetti-canvas {{ position: fixed; inset: 0; pointer-events: none; z-index: 999; }}
+  #confetti-canvas, #embers-canvas {{ position: fixed; inset: 0; pointer-events: none; }}
+  #embers-canvas {{ z-index: 0; }}
+  #confetti-canvas {{ z-index: 999; }}
+  .wrap {{ position: relative; z-index: 1; }}
+  .stat-box {{ animation: wolvesPop 0.5s ease both; }}
+  .stat-box:nth-child(2) {{ animation-delay: 0.08s; }}
+  .mini-board {{ margin: 0 0 18px; }}
+  .mini-board h2 {{ margin-top: 0; display: flex; align-items: center; justify-content: space-between; }}
+  .mini-board .week-range {{ font-size: 10.5px; color: #a98484; text-transform: none; letter-spacing: 0; font-weight: 400; }}
+  .mini-board ol {{ list-style: none; padding: 0; margin: 0; }}
+  .mini-board li {{
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 9px 12px; border-radius: 10px; background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06); margin-bottom: 6px; font-size: 13.5px;
+    animation: wolvesFadeUp 0.4s ease both;
+  }}
+  .mini-board li:nth-child(1) {{ animation-delay: 0.05s; }}
+  .mini-board li:nth-child(2) {{ animation-delay: 0.12s; }}
+  .mini-board li:nth-child(3) {{ animation-delay: 0.19s; }}
+  .mini-board .medal {{ font-size: 15px; margin-right: 2px; }}
+  .mini-board .donor-name {{ flex: 1; color: #f1e9e9; font-weight: 600; }}
+  .mini-board .donor-total {{ color: #ff9a9a; font-weight: 700; font-variant-numeric: tabular-nums; }}
+  .tier-badge {{
+    display: inline-flex; align-items: center; gap: 7px; margin: 14px auto 0; padding: 8px 18px;
+    border-radius: 999px; font-weight: 800; font-size: 14px; animation: wolvesPop 0.5s ease 0.15s both;
+  }}
+  .share-btn {{
+    display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 10px;
+    padding: 13px; border-radius: 12px; min-height: 46px; width: 100%;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15);
+    color: #fff; font-size: 14.5px; font-weight: 600; cursor: pointer; touch-action: manipulation;
+  }}
+  .share-btn:active {{ background: rgba(255,255,255,0.1); }}
+  .toast {{
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+    background: #1b0e0e; border: 1px solid rgba(255,255,255,0.15); color: #fff; font-size: 13.5px;
+    padding: 11px 18px; border-radius: 999px; z-index: 1000; opacity: 0; transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none; white-space: nowrap;
+  }}
+  .toast.show {{ opacity: 1; transform: translateX(-50%) translateY(0); }}
+  @media (prefers-reduced-motion: reduce) {{
+    .card, .stat-box, .mini-board li, .tier-badge, .error, .result .big {{ animation: none !important; }}
+  }}
 </style>
 </head>
 <body>
+<canvas id="embers-canvas"></canvas>
 <canvas id="confetti-canvas"></canvas>
 <div class="wrap">
 {banner}
@@ -272,6 +320,7 @@ PAGE_SHELL = """<!DOCTYPE html>
 </div>
 <div class="footer">WOLVES 🐺 | BRAVIA 3953 &bull; Alliance Bank Donations</div>
 </div>
+<div class="toast" id="wolves-toast"></div>
 <script>
   var WOLVES_MAX_UPLOAD_BYTES = {max_upload_bytes};
 
@@ -360,7 +409,45 @@ PAGE_SHELL = """<!DOCTYPE html>
     if (row) row.querySelectorAll('.chip').forEach(function(c) {{ c.classList.remove('active'); }});
     input.value = already ? '0' : String(value);
     if (!already) btn.classList.add('active');
+    window.__wolvesVibrate(12);
     window.__wolvesUpdateTotal && window.__wolvesUpdateTotal();
+  }};
+
+  // Short haptic buzz on supported mobile browsers -- a no-op everywhere
+  // else (desktop browsers simply don't have navigator.vibrate).
+  window.__wolvesVibrate = function(ms) {{
+    try {{ if (navigator.vibrate) navigator.vibrate(ms); }} catch (e) {{}}
+  }};
+
+  window.__wolvesReducedMotion = function() {{
+    return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }};
+
+  // Small bottom toast, used by the share button's clipboard-copy fallback.
+  window.__wolvesToast = function(message) {{
+    var el = document.getElementById('wolves-toast');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(window.__wolvesToastTimer);
+    window.__wolvesToastTimer = setTimeout(function() {{ el.classList.remove('show'); }}, 2200);
+  }};
+
+  // Success-page "brag about it" button: native share sheet where
+  // available (mobile), clipboard copy + toast everywhere else.
+  window.__wolvesShare = function(text) {{
+    window.__wolvesVibrate(10);
+    if (navigator.share) {{
+      navigator.share({{ text: text }}).catch(function() {{}});
+      return;
+    }}
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(text).then(function() {{
+        window.__wolvesToast('📋 Copied to clipboard!');
+      }}).catch(function() {{
+        window.__wolvesToast('Could not copy — try manually selecting the text.');
+      }});
+    }}
   }};
 
   // Live running total under the amounts grid.
@@ -403,6 +490,7 @@ PAGE_SHELL = """<!DOCTYPE html>
   // couple hundred particles falling under gravity for ~2.5s. Triggered
   // from the success page only (see render_success).
   window.__wolvesConfetti = function() {{
+    if (window.__wolvesReducedMotion()) return;
     var canvas = document.getElementById('confetti-canvas');
     if (!canvas || !canvas.getContext) return;
     var ctx = canvas.getContext('2d');
@@ -440,6 +528,52 @@ PAGE_SHELL = """<!DOCTYPE html>
     }}
     requestAnimationFrame(frame);
   }};
+
+  // Continuous, subtle ember particles drifting up from the bottom of the
+  // screen -- echoes the embers/fire in the background artwork. Low
+  // particle count and a capped device-pixel-ratio keep it cheap on
+  // battery/CPU; skipped entirely for prefers-reduced-motion users.
+  (function startEmbers() {{
+    var canvas = document.getElementById('embers-canvas');
+    if (!canvas || !canvas.getContext || window.__wolvesReducedMotion()) return;
+    var ctx = canvas.getContext('2d');
+    var W, H;
+    function resize() {{ W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }}
+    resize();
+    window.addEventListener('resize', resize);
+
+    var embers = [];
+    var COUNT = 26;
+    function spawn(initial) {{
+      return {{
+        x: Math.random() * W,
+        y: initial ? Math.random() * H : H + 10,
+        r: 1 + Math.random() * 2.2,
+        speed: 0.35 + Math.random() * 0.7,
+        drift: (Math.random() - 0.5) * 0.4,
+        flicker: Math.random() * Math.PI * 2,
+        life: 0.4 + Math.random() * 0.6,
+      }};
+    }}
+    for (var i = 0; i < COUNT; i++) embers.push(spawn(true));
+
+    function frame() {{
+      ctx.clearRect(0, 0, W, H);
+      embers.forEach(function(p) {{
+        p.y -= p.speed;
+        p.x += p.drift;
+        p.flicker += 0.08;
+        if (p.y < -10) {{ Object.assign(p, spawn(false)); }}
+        var alpha = p.life * (0.5 + 0.5 * Math.sin(p.flicker));
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(255,' + (120 + Math.floor(60 * Math.sin(p.flicker))) + ',60,' + alpha.toFixed(2) + ')';
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }});
+      requestAnimationFrame(frame);
+    }}
+    requestAnimationFrame(frame);
+  }})();
 </script>
 </body>
 </html>
@@ -490,6 +624,29 @@ def render_stats_row(days_left: int, compliant: int, total_members: int) -> str:
     """
 
 
+_MINI_MEDALS = ["🥇", "🥈", "🥉"]
+
+
+def render_leaderboard_mini(ranked: list, start=None, end=None) -> str:
+    if not ranked:
+        return ""
+    week_range = f" <span class='week-range'>({start.strftime('%b %-d')}–{end.strftime('%b %-d')})</span>" if start and end else ""
+    rows = "".join(
+        f"""<li>
+              <span class="medal">{_MINI_MEDALS[i] if i < len(_MINI_MEDALS) else '▫️'}</span>
+              <span class="donor-name">{html.escape(name)}</span>
+              <span class="donor-total">{fmt_num(total)}</span>
+            </li>"""
+        for i, (name, total) in enumerate(ranked[:3])
+    )
+    return f"""
+      <div class="mini-board">
+        <h2>🏆 Top Donors This Week{week_range}</h2>
+        <ol>{rows}</ol>
+      </div>
+    """
+
+
 def _amount_field(label: str, name: str, emoji_chips: list) -> str:
     chips = "".join(
         f'<button type="button" class="chip" onclick="window.__wolvesChip(this, \'{name}\', {value})">{text}</button>'
@@ -512,17 +669,22 @@ def render_form(
     days_left: int = None,
     compliant: int = None,
     total_members: int = None,
+    top_donors: list = None,
+    week_start=None,
+    week_end=None,
 ) -> str:
     display_name = html.escape(payload.get("n", "Donor"))
     bank_name = html.escape(payload.get("bank", "the alliance bank"))
     error_html = f'<div class="error">⚠️ {html.escape(error)}</div>' if error else ""
     stats_html = render_stats_row(days_left, compliant, total_members)
+    leaderboard_html = render_leaderboard_mini(top_donors or [], week_start, week_end)
     quick_amounts = [("10M", 10_000_000), ("25M", 25_000_000), ("50M", 50_000_000)]
     body = f"""
       <span class="pill">Donating as {display_name}</span>
       <h1><span class="wolf">🐺</span>Alliance Bank Donation</h1>
       <p class="sub">Follow the steps below, then log exactly what you sent.</p>
       {stats_html}
+      {leaderboard_html}
       <h2>How it works</h2>
       <ol>
         <li>In-game, go to <b>Alliance &rarr; Assistance</b> and send the resources
@@ -598,6 +760,22 @@ def render_progress_bars(weekly_totals: dict, minimum: int = WEEKLY_MINIMUM_PER_
     """
 
 
+_DONATION_TIERS = [
+    (500_000_000, "👑", "Legendary Donor", "rgba(255,215,90,0.16)", "#ffd95a", "rgba(255,215,90,0.45)"),
+    (100_000_000, "💎", "Diamond Donor", "rgba(120,200,255,0.16)", "#9fe0ff", "rgba(120,200,255,0.45)"),
+    (40_000_000, "🥇", "Gold Donor", "rgba(255,200,80,0.14)", "#ffd27a", "rgba(255,200,80,0.4)"),
+    (10_000_000, "🥈", "Silver Donor", "rgba(220,220,230,0.14)", "#e3e3ea", "rgba(220,220,230,0.4)"),
+    (0, "🥉", "Bronze Donor", "rgba(205,140,90,0.14)", "#e3b08a", "rgba(205,140,90,0.4)"),
+]
+
+
+def _donation_tier(total: int) -> tuple:
+    for threshold, emoji, label, bg, color, border in _DONATION_TIERS:
+        if total >= threshold:
+            return emoji, label, bg, color, border
+    return _DONATION_TIERS[-1][1:]
+
+
 def render_success(payload: dict, donated: dict, demo: bool, weekly_totals: dict = None) -> str:
     display_name = html.escape(payload.get("n", "Donor"))
     rows = "".join(
@@ -611,16 +789,37 @@ def render_success(payload: dict, donated: dict, demo: bool, weekly_totals: dict
         else "<p class='note'>Check the Discord channel you ran /donate from for the confirmation post.</p>"
     )
     progress_html = render_progress_bars(weekly_totals)
+
+    total_donated = sum(donated.values())
+    emoji, label, bg, color, border = _donation_tier(total_donated)
+    tier_html = (
+        f'<span class="tier-badge" style="background:{bg};color:{color};border:1px solid {border};">'
+        f'{emoji} {html.escape(label)}</span>'
+    )
+    share_text = (
+        f"🐺 Just donated {fmt_num(total_donated)} resources to the WOLVES alliance bank! 💪 "
+        f"#WolvesStrong"
+    )
+    share_html = (
+        f'<button type="button" class="share-btn" '
+        f'onclick="window.__wolvesShare({json.dumps(share_text)})">📣 Brag about it</button>'
+    )
+
     body = f"""
       <div class="result">
         <div class="big">✅</div>
         <h1>Donation Recorded</h1>
         <p class="sub">Thank you, {display_name}!</p>
+        <div>{tier_html}</div>
       </div>
       <ul class="amounts">{rows}</ul>
+      {share_html}
       {progress_html}
       {note}
-      <script>window.__wolvesConfetti && window.__wolvesConfetti();</script>
+      <script>
+        window.__wolvesConfetti && window.__wolvesConfetti();
+        window.__wolvesVibrate && window.__wolvesVibrate([15, 40, 15]);
+      </script>
     """
     return render_page("Donation Recorded", body, demo)
 
@@ -933,16 +1132,24 @@ async def _get_week_stats(guild_id) -> dict:
             members_tab_name=config["alliance_members_tab_name"],
             minimum=WEEKLY_MINIMUM_PER_RESOURCE,
         )
+        top_donors = await sheets.get_weekly_top_donors(
+            config["donations_sheet_id"], start, end,
+            donations_tab_name=config["donations_tab_name"], limit=3,
+        )
         return {
             "days_left": sheets.days_until_reset(),
             "compliant": compliant,
             "total_members": total_members,
             "start": start,
             "end": end,
+            "top_donors": top_donors,
         }
     except Exception as e:
         print(f"[webapp] couldn't load weekly stats: {e!r}")
-        return {"days_left": None, "compliant": None, "total_members": None, "start": None, "end": None}
+        return {
+            "days_left": None, "compliant": None, "total_members": None,
+            "start": None, "end": None, "top_donors": [],
+        }
 
 
 async def handle_root(request: web.Request):
@@ -990,7 +1197,12 @@ async def handle_donate_get(request: web.Request):
 
     if demo:
         # Fun, static sample numbers -- no real sheet is touched for demo links.
-        stats = {"days_left": 6, "compliant": 42, "total_members": 122}
+        start, end = sheets.current_week_window()
+        stats = {
+            "days_left": 6, "compliant": 42, "total_members": 122,
+            "start": start, "end": end,
+            "top_donors": [("vanilla eve", 84_000_000.0), ("Hecate83", 20_000_000.0), ("Quackyz", 44.0)],
+        }
     else:
         stats = await _get_week_stats(payload.get("g"))
 
@@ -998,6 +1210,7 @@ async def handle_donate_get(request: web.Request):
         text=render_form(
             payload, demo, token,
             days_left=stats["days_left"], compliant=stats["compliant"], total_members=stats["total_members"],
+            top_donors=stats.get("top_donors"), week_start=stats.get("start"), week_end=stats.get("end"),
         ),
         content_type="text/html",
     )
@@ -1035,13 +1248,19 @@ async def handle_donate_submit(request: web.Request):
             else "Please attach your Assistance Report screenshot."
         )
         if demo:
-            stats = {"days_left": 6, "compliant": 42, "total_members": 122}
+            start, end = sheets.current_week_window()
+            stats = {
+                "days_left": 6, "compliant": 42, "total_members": 122,
+                "start": start, "end": end,
+                "top_donors": [("vanilla eve", 84_000_000.0), ("Hecate83", 20_000_000.0), ("Quackyz", 44.0)],
+            }
         else:
             stats = await _get_week_stats(payload.get("g"))
         return web.Response(
             text=render_form(
                 payload, demo, token, error=error,
                 days_left=stats["days_left"], compliant=stats["compliant"], total_members=stats["total_members"],
+                top_donors=stats.get("top_donors"), week_start=stats.get("start"), week_end=stats.get("end"),
             ),
             content_type="text/html",
         )
