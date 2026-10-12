@@ -410,9 +410,15 @@ async def _build_donate_link_response(guild_id: int, channel_id: int, user_id: i
     button on the DONATION GUIDE post -- builds the personal, 30-minute
     donation link embed + button for whoever asked for one."""
     config = await server_config.get_config(guild_id)
+    # Donation confirmations (with the proof screenshot) always go to the
+    # server's configured donation-log channel if one is set -- e.g. so they
+    # don't pile up inside the DONATION GUIDE post itself. Falls back to
+    # wherever the donor asked for their link from, for servers that haven't
+    # set one up yet.
+    confirmation_channel_id = config.get("donation_log_channel_id") or channel_id
     token = donate_token.generate_token({
         "g": guild_id,
-        "c": channel_id,
+        "c": confirmation_channel_id,
         "u": user_id,
         "n": display_name,
         "bank": config["bank_name"],
@@ -684,6 +690,7 @@ async def donate(interaction: discord.Interaction):
     bank_name="Your alliance bank's exact in-game name, shown to members in proof-screenshot instructions",
     announce_channel="Channel where /announce should post for this server",
     tickets_channel="Channel where /ticket (and the donation site's 'Get Help' button) should create private support threads",
+    donation_log_channel="Channel where donation confirmation posts (with proof screenshots) should always go, instead of wherever the donor's link was requested from",
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def config(
@@ -694,11 +701,12 @@ async def config(
     bank_name: str = None,
     announce_channel: discord.TextChannel = None,
     tickets_channel: Union[discord.TextChannel, discord.ForumChannel] = None,
+    donation_log_channel: discord.TextChannel = None,
 ):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     # No options given -> just show the server's current settings.
-    if not any([donations_sheet, donations_tab, alliance_members_tab, bank_name, announce_channel, tickets_channel]):
+    if not any([donations_sheet, donations_tab, alliance_members_tab, bank_name, announce_channel, tickets_channel, donation_log_channel]):
         current = await server_config.get_config(interaction.guild_id)
         embed = discord.Embed(
             title="⚙️ Current Server Configuration",
@@ -720,6 +728,11 @@ async def config(
         embed.add_field(
             name="Tickets Channel",
             value=f"<#{current['tickets_channel_id']}>" if current["tickets_channel_id"] else "Not set",
+            inline=True,
+        )
+        embed.add_field(
+            name="Donation Log Channel",
+            value=f"<#{current['donation_log_channel_id']}>" if current["donation_log_channel_id"] else "Not set (uses wherever the link was requested from)",
             inline=True,
         )
         embed.set_footer(text="Run /config with an option to change a setting, e.g. /config donations_sheet:<url>")
@@ -756,6 +769,8 @@ async def config(
     if tickets_channel:
         updates["tickets_channel_id"] = tickets_channel.id
         await _ensure_ticket_role_access(tickets_channel)
+    if donation_log_channel:
+        updates["donation_log_channel_id"] = donation_log_channel.id
 
     try:
         await server_config.set_config(
