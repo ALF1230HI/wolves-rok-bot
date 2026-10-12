@@ -97,22 +97,11 @@ required), or the member is unsure what counts as proof (it must be the Assistan
 entry for that specific donation, not a different screenshot).
 
 How to handle each message, in order of priority:
-- If the member's message is vague or just a general request for help (e.g. "help", "I need a \
-guide", "it's not working", or anything that doesn't name a specific symptom), do NOT just ask \
-what's wrong. Immediately walk them through the step-by-step /donate guide above (it's the \
-most common reason people open a ticket), in your own words, and ask them to try it and say \
-what happens, or tell you if they meant something else. Giving that guide counts as helping --
-set confident:true for this.
-- If they've described a specific symptom, give the specific fix for it from the list above, \
-specific and actionable. This also counts as confident:true.
-- Only ask a clarifying question instead of giving a guide/fix if you genuinely have no idea \
-which feature they even mean after reading the whole conversation so far -- and even then, \
-still set confident:true, since you're actively helping move the conversation forward.
-- Set confident:false ONLY when a human genuinely needs to look at something you cannot fix \
-with advice: an actual bug, a wrong number already recorded in the spreadsheet, a permissions \
-problem, or the member has clearly said they already tried your exact guide/fix and it still \
-didn't work. Simply not having enough detail yet, or it being the first message, is never a \
-reason for confident:false -- try the guide first.
+- The full step-by-step /donate walkthrough (the required numbered-list format) is special and should NOT be your default answer to every message -- only give it when you're explicitly told below that it's allowed for this specific reply (that happens on a ticket's opening message, and whenever the member's latest message itself asks for "the guide"/steps/instructions). When it's not allowed for this reply, do not fall back to it even if the message is vague -- see the next points instead.
+- Always answer what was actually asked, directly and specifically, using the conversation so far for context. A yes/no or factual question (e.g. "is the system working?", "did my donation go through?") gets a short, direct answer -- don't pivot into a walkthrough nobody asked for. A specific symptom gets the specific fix for it from the list above. A vague "help"/"it's not working" message (when the full guide isn't allowed this turn, per the note above) gets a short, friendly, 1-4 sentence reply that names the relevant command (/donate or /ticket) and the single most useful next step, or a short clarifying question if you truly can't tell what they mean yet -- not the full numbered breakdown.
+- Keep replies natural and varied -- don't reuse the exact same stock sentences turn after turn in the same conversation; respond to what's actually new in their latest message.
+- Giving a direct answer, a specific fix, the full guide (when allowed), or a short clarifying question all count as confident:true, since you're actively helping move the conversation forward either way.
+- Set confident:false ONLY when a human genuinely needs to look at something you cannot fix with advice: an actual bug, a wrong number already recorded in the spreadsheet, a permissions problem, or the member has clearly said they already tried your exact guide/fix and it still didn't work. Simply not having enough detail yet, or it being the first message, is never a reason for confident:false.
 
 Members can attach screenshots (e.g. an error message, their Assistance Report, or the \
 donation web page). When an image is attached, actually look at it and use what you see to \
@@ -120,9 +109,9 @@ help -- e.g. confirm whether a screenshot looks like a valid Assistance Report e
 error message in it, or spot what's wrong on the page. If an image doesn't show what's needed, \
 say specifically what to send instead.
 
-Whenever your reply includes a step-by-step walkthrough (this includes every time you give the \
-/donate guide), you MUST format the steps as a numbered list, written EXACTLY like this -- each \
-step is its own number, and there is a blank line between every step:
+Whenever you DO give the full step-by-step /donate walkthrough (only when allowed for this \
+reply, per above), you MUST format the steps as a numbered list, written EXACTLY like this -- \
+each step is its own number, and there is a blank line between every step:
 
 1. <first step>
 
@@ -137,14 +126,47 @@ and do not use markdown bullets, asterisks, or bold -- plain numbered lines only
 blank lines exactly like the example above. You may add one short friendly sentence before the \
 list (e.g. a greeting) and one short friendly sentence after it (e.g. asking them to try it and \
 report back), but the steps themselves must always be that exact numbered-list format, never \
-prose.
+prose. You can also mention in passing, in your own words, that they can just ask for "the \
+guide" again any time they want to see those steps again.
 
-If your reply is NOT a step-by-step walkthrough (e.g. a single specific fix, or a clarifying \
-question), just write a short, friendly reply (3-6 sentences, plain text, no markdown headers) \
+For every other kind of reply (a direct answer, a specific fix, or a clarifying question), just \
+write a short, friendly reply (1-4 sentences, plain text, no markdown headers, no numbered list) \
 using the conversation so far for context so you don't repeat yourself turn over turn.
 
 Respond with ONLY valid JSON in this exact shape:
 {"reply": "<your reply text>", "confident": true or false}"""
+
+
+# Appended to SYSTEM_PROMPT as part of the system instruction for a single
+# call (never shown to the member, and never part of the conversation
+# history) -- tells the model whether the full numbered /donate walkthrough
+# is allowed for THIS reply specifically. Keeps the guide to just two
+# triggers: the ticket's opening message, and whenever the member's own
+# latest message explicitly asks for "the guide" again.
+_GUIDE_ALLOWED_NOTE = (
+    "\n\nFOR THIS SPECIFIC REPLY: giving the full step-by-step /donate walkthrough (the "
+    "numbered-list format) IS allowed right now, because this is the ticket's opening message. "
+    "If their message is vague or a general request for help, go ahead and give the full "
+    "numbered walkthrough; if it already names a specific symptom, give the specific fix for it "
+    "instead."
+)
+_GUIDE_NOT_ALLOWED_NOTE = (
+    "\n\nFOR THIS SPECIFIC REPLY: do NOT give the full step-by-step /donate walkthrough (the "
+    "numbered-list format), even if the message is vague or sounds like a general help request "
+    "-- that full guide was already shown when the ticket opened, and the member did not ask "
+    "for it again just now. Answer naturally in 1-4 short sentences instead, specific to what "
+    "they actually said -- e.g. a direct answer, a specific fix, or a short clarifying question. "
+    "You may mention in passing that they can just ask for \"the guide\" any time to see the "
+    "full steps again."
+)
+_GUIDE_REQUESTED_NOTE = (
+    "\n\nFOR THIS SPECIFIC REPLY: the member's latest message explicitly asked for the guide, "
+    "so giving the full step-by-step /donate walkthrough (the numbered-list format) IS allowed "
+    "and encouraged right now, even though this isn't the ticket's opening message."
+)
+
+_GUIDE_KEYWORD = "guide"
+
 
 
 RESPONSE_SCHEMA = {
@@ -165,21 +187,27 @@ FALLBACK_RESULT = {
 }
 
 
-async def _generate(contents: list, _is_retry: bool = False) -> dict:
+async def _generate(contents: list, _is_retry: bool = False, extra_instruction: str = "") -> dict:
     """Shared Gemini call. `contents` is a list of {"role", "parts"} turns,
-    already in Gemini's wire format. Returns {"reply": str, "confident": bool},
-    failing safe to FALLBACK_RESULT on any problem. If the response comes
-    back truncated (see MAX_OUTPUT_TOKENS comment above), this retries once
-    with double the token budget before giving up -- callers should never
-    pass `_is_retry` themselves, it's for that one internal retry call."""
+    already in Gemini's wire format. `extra_instruction` (if given) is
+    appended to the system instruction for this call only -- used to tell
+    the model whether the full numbered /donate guide is allowed for this
+    specific reply (see _GUIDE_*_NOTE above), without it ever becoming part
+    of the visible conversation history. Returns
+    {"reply": str, "confident": bool}, failing safe to FALLBACK_RESULT on
+    any problem. If the response comes back truncated (see MAX_OUTPUT_TOKENS
+    comment above), this retries once with double the token budget before
+    giving up -- callers should never pass `_is_retry` themselves, it's for
+    that one internal retry call."""
     if not GEMINI_API_KEY:
         print("[ai_helper] no GEMINI_API_KEY set, skipping AI response")
         return dict(FALLBACK_RESULT)
 
     max_tokens = MAX_OUTPUT_TOKENS * 2 if _is_retry else MAX_OUTPUT_TOKENS
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    system_text = SYSTEM_PROMPT + extra_instruction if extra_instruction else SYSTEM_PROMPT
     body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "systemInstruction": {"parts": [{"text": system_text}]},
         "contents": contents,
         "generationConfig": {
             "responseMimeType": "application/json",
@@ -214,7 +242,7 @@ async def _generate(contents: list, _is_retry: bool = False) -> dict:
             # of immediately failing the member over to a human for what's
             # really just a budget hiccup.
             print(f"[ai_helper] unparseable/truncated response (finishReason={finish_reason!r}, content={content!r}), retrying with bigger budget")
-            return await _generate(contents, _is_retry=True)
+            return await _generate(contents, _is_retry=True, extra_instruction=extra_instruction)
         if parsed is None:
             return dict(FALLBACK_RESULT)
         reply = str(parsed.get("reply", "")).strip()
@@ -259,9 +287,15 @@ def _build_parts(text: str, images: list) -> list:
 
 async def get_ai_response(issue: str, images: list = None) -> dict:
     """First response to a freshly-opened ticket. `images` (optional) is a
-    list already run through prepare_images(). Returns
-    {"reply": str, "confident": bool}."""
-    return await _generate([{"role": "user", "parts": _build_parts(issue, images)}])
+    list already run through prepare_images(). This is one of the only two
+    moments the full step-by-step /donate guide is allowed to appear (the
+    other being an explicit "guide" request in a follow-up, see
+    get_ai_followup) -- so it always gets the guide-allowed instruction.
+    Returns {"reply": str, "confident": bool}."""
+    return await _generate(
+        [{"role": "user", "parts": _build_parts(issue, images)}],
+        extra_instruction=_GUIDE_ALLOWED_NOTE,
+    )
 
 
 async def get_ai_followup(history: list, new_images: list = None) -> dict:
@@ -271,7 +305,12 @@ async def get_ai_followup(history: list, new_images: list = None) -> dict:
     caller. `new_images` (optional, already run through prepare_images())
     are attached to that most recent user turn only; older turns are
     text-only even if they originally had images (see MAX_IMAGES_PER_MESSAGE
-    note above). Returns {"reply": str, "confident": bool}."""
+    note above). Returns {"reply": str, "confident": bool}.
+
+    The full step-by-step /donate guide only reappears here if the member's
+    own latest message explicitly asks for it (contains the word "guide")
+    -- every other follow-up gets a short, direct, conversational reply
+    instead, so the guide doesn't get repeated after every single message."""
     turns = history[-MAX_HISTORY_TURNS:]
     contents = [{"role": role, "parts": [{"text": text}]} for role, text in turns if text]
     if new_images and contents and contents[-1]["role"] == "user":
@@ -279,7 +318,16 @@ async def get_ai_followup(history: list, new_images: list = None) -> dict:
             contents[-1]["parts"].append({"inlineData": {"mimeType": img["mime_type"], "data": img["b64"]}})
     if not contents:
         return dict(FALLBACK_RESULT)
-    return await _generate(contents)
+
+    latest_user_text = ""
+    for role, text in reversed(turns):
+        if role == "user":
+            latest_user_text = text or ""
+            break
+    guide_requested = _GUIDE_KEYWORD in latest_user_text.lower()
+    extra_instruction = _GUIDE_REQUESTED_NOTE if guide_requested else _GUIDE_NOT_ALLOWED_NOTE
+
+    return await _generate(contents, extra_instruction=extra_instruction)
 
 
 def escalate_mention() -> str:
